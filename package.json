@@ -12,6 +12,7 @@
     "jsdom": "^26.1.0",
     "mdast-util-from-adf": "^2.1.1",
     "node-fetch": "^3.3.2",
+    "otpauth": "^9.4.0",
     "remark-gfm": "^4.0.1",
     "remark-stringify": "^11.0.0",
     "unified": "^11.0.5",

@@ -40,4 +40,5 @@ export const ghConfig = {
 export const ghAuth = {
   username: process.env.GH_USER,
   password: process.env.GH_PASSWORD,
+  twoFactorSecret: process.env.GH_2FA_SECRET,
 };
