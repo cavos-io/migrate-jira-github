@@ -29,15 +29,12 @@ export function adfToMarkdown(adf, mentionMap = {}) {
       };
     }
 
-    if (
-      (node.type === "media" || node.type === "mediaSingle") &&
-      node.attrs?.url
-    ) {
-      const alt = node.attrs.filename || node.attrs.type || "";
-      const url = node.attrs.url;
+    if (node.type === "media" && node.attrs?.id) {
+      const alt = node.attrs.alt || "";
+      const id = node.attrs.id;
       return {
         type: "text",
-        text: `![${alt}](${url})`,
+        text: `\n\n![${alt}](${id})\n\n`,
         marks: node.marks ?? [],
       };
     }

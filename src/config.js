@@ -21,7 +21,9 @@ export const jiraConfig = {
   user: process.env.JIRA_USER,
   token: process.env.JIRA_API_TOKEN,
   jql: process.env.JIRA_JQL,
-  pageSize: parseInt(process.env.JIRA_PAGE_SIZE, 10) || 50,
+  pageSize: process.env.JIRA_PAGE_SIZE
+    ? parseInt(process.env.JIRA_PAGE_SIZE, 10)
+    : 50,
 };
 
 export const ghConfig = {

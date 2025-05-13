@@ -61,10 +61,6 @@ export class IssueMigrator {
     return this._ghClients.get(token);
   }
 
-  extractText(adf) {
-    return adfToMarkdown(adf, this.userMap);
-  }
-
   async migrate() {
     const issues = await this.jira.fetchAllIssues();
 
@@ -90,7 +86,7 @@ export class IssueMigrator {
     const isSubtask = Boolean(fields.issuetype.subtask);
 
     // build the issue body
-    let body = this.extractText(fields.description);
+    let body = adfToMarkdown(fields.description, this.userMap);
 
     // choose a GitHub token: personal if mapped, else default
     const creatorId = fields.creator?.accountId;
@@ -263,7 +259,7 @@ export class IssueMigrator {
 
     await Promise.all(
       comments.map(async (c) => {
-        let text = this.extractText(c.body);
+        let text = adfToMarkdown(c.body, this.userMap);
         for (const [oldUrl, newUrl] of Object.entries(urlMap)) {
           text = text.replace(new RegExp(escapeRegExp(oldUrl), "g"), newUrl);
         }

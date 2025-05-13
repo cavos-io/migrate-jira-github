@@ -120,18 +120,9 @@ export class GitHubClient {
       body: form,
     });
 
-    const body = await resp.text();
-    console.log("⤷ postToS3 response:", {
-      status: resp.status,
-      statusText: resp.statusText,
-      body,
-    });
-
     if (!resp.ok) {
       throw new Error(`S3 upload failed: ${resp.status}`);
     }
-
-    return body;
   }
 
   async registerAsset(policy, issueNumber) {
@@ -155,7 +146,6 @@ export class GitHubClient {
     }
 
     const data = await resp.json();
-    console.log("⤷ registerAsset response:", data);
     if (!data.href) {
       throw new Error(
         `No asset URL found in registerAsset response: ${JSON.stringify(data)}`
@@ -178,8 +168,6 @@ export class GitHubClient {
       fileBuffer.length,
       mimeType
     );
-
-    console.log("⤷ upload policy:", policy);
 
     await this.postToS3(policy, fileBuffer, fileName);
 
