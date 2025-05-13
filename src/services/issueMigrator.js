@@ -3,12 +3,14 @@ export class IssueMigrator {
     jiraClient,
     githubClient,
     issueTypeMap,
+    priorityOptionMap,
     statusOptionMap,
     userMap
   ) {
     this.jira = jiraClient;
     this.gh = githubClient;
     this.issueTypeMap = issueTypeMap;
+    this.priorityOptionMap = priorityOptionMap;
     this.statusOptionMap = statusOptionMap;
     this.userMap = userMap;
     this.keyToNumber = new Map();
@@ -121,6 +123,22 @@ export class IssueMigrator {
       console.log(`🏷️  Set project “Status” → ${optionId}`);
     } else {
       console.warn(`⚠️  No mapping for Jira status ${jiraStatusId}`);
+    }
+
+    // grab the Jira priority ID:
+    const jiraPriorityId = fields.priority?.name;
+
+    const priorityOptionId =
+      this.priorityOptionMap[jiraPriorityId] || "da944a9c";
+    if (priorityOptionId) {
+      await this.gh.updateProjectV2ItemFieldValue(
+        projectItemId,
+        process.env.GH_PROJECT_V2_PRIORITY_FIELD_ID,
+        priorityOptionId
+      );
+      console.log(`🏷️  Set project “Priority” → ${priorityOptionId}`);
+    } else {
+      console.warn(`⚠️  No mapping for Jira priority ${jiraPriorityId}`);
     }
 
     // fetch and migrate comments

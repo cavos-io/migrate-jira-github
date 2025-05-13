@@ -3,6 +3,11 @@ export const issueTypeMap = {
   "Sub-task": "Code",
 };
 
+export const priorityOptionMap = {
+  Highest: "79628723", // Highest - P0
+  High: "0a877460", // High - P1
+};
+
 export const statusOptionMap = {
   10058: "f75ad846", // Backlog - Backlog
   10059: "61e4505c", // Selected for Dev - Ready
