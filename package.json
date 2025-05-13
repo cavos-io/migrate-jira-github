@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "migrate": "node migrate.js"
+    "migrate": "node src/bin/migrate.js"
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",
