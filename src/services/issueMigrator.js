@@ -1,3 +1,5 @@
+import { ghConfig } from "../config.js";
+
 export class IssueMigrator {
   constructor(
     jiraClient,
@@ -14,171 +16,174 @@ export class IssueMigrator {
     this.statusOptionMap = statusOptionMap;
     this.userMap = userMap;
     this.keyToNumber = new Map();
+
+    // Use centralized GitHub configuration
+    this.owner = ghConfig.owner;
+    this.repo = ghConfig.repo;
+    this.projectV2StatusFieldId = ghConfig.projectV2StatusFieldId;
+    this.projectV2PriorityFieldId = ghConfig.projectV2PriorityFieldId;
+    this.defaultPriorityOption = ghConfig.defaultPriorityOption;
   }
 
   /**
-   * Flatten a minimal ADF document into plain text.
+   * Flatten ADF (Atlassian Document Format) or pass-through strings.
    */
-  extractTextFromADF(adf) {
-    if (!adf || !Array.isArray(adf.content)) return "";
+  extractText(adf) {
+    if (!adf) return "";
+    if (typeof adf === "string") return adf;
     return (
       adf.content
-        .map((block) => {
-          if (!Array.isArray(block.content)) return "";
-          // join all `text` fields in this block
-          return block.content
+        .map((block) =>
+          (block.content || [])
             .filter((node) => typeof node.text === "string")
             .map((node) => node.text)
-            .join("");
-        })
-        // drop empty strings and separate blocks with a blank line
+            .join("")
+        )
         .filter(Boolean)
-        .join("\n\n")
+        .join("\n\n") || ""
     );
   }
 
+  /**
+   * Fetch and migrate all Jira issues, parents before subtasks.
+   */
   async migrate() {
     const issues = await this.jira.fetchAllIssues();
 
-    // ensure parents come before subtasks
-    issues.sort((a, b) => {
-      const aSub = a.fields.issuetype.subtask ? 1 : 0;
-      const bSub = b.fields.issuetype.subtask ? 1 : 0;
-      return aSub - bSub;
-    });
+    // Sort so that parent issues run before their subtasks
+    issues.sort(
+      (a, b) =>
+        Number(a.fields.issuetype.subtask) - Number(b.fields.issuetype.subtask)
+    );
 
     for (const issue of issues) {
-      await this._migrateSingle(issue);
+      try {
+        await this._migrateSingle(issue);
+      } catch (err) {
+        console.error(`Failed migrating ${issue.key}:`, err);
+      }
     }
   }
 
+  /**
+   * Handle migration of a single issue.
+   */
   async _migrateSingle(issue) {
     const { key, fields } = issue;
-    const isSub = fields.issuetype.subtask;
+    const isSubtask = Boolean(fields.issuetype.subtask);
     const title = `[${key}] ${fields.summary}`;
+    let body = this.extractText(fields.description);
+    const assignees = this._buildAssignees(fields);
+    const labels = this._buildLabels(fields);
+    const type =
+      this.issueTypeMap[fields.issuetype.name] || fields.issuetype.name;
 
-    // map Jira issueType to Github type
-    const issueType = fields.issuetype.name;
-    const type = this.issueTypeMap[issueType] || issueType;
-    const labels = [...fields.labels];
-
-    // and if it's a Bug, add the 'bug' label (no dupes)
-    if (issueType === "Bug" && !labels.includes("bug")) {
-      labels.push("bug");
-    }
-
-    // map Jira accountId to GitHub username
-    const jiraId = fields.assignee?.accountId;
-    const ghUser = jiraId ? this.userMap[jiraId] : undefined;
-    const assignees = ghUser ? [ghUser] : [];
-
-    // grab raw description
-    const rawDesc = fields.description;
-    let body = "";
-
-    // coerce to string
-    if (!rawDesc) {
-      body = "";
-    } else if (typeof rawDesc === "string") {
-      body = rawDesc;
-    } else {
-      // assume Atlassian Document Format (ADF)
-      body = this.extractTextFromADF(rawDesc);
-    }
-
-    // if subtask, append parent link
-    if (isSub) {
-      const parentKey = fields.parent.key;
-      const parentNum = this.keyToNumber.get(parentKey);
-      // Concept to handle related issue on Jira
-      // Todo: relate real issues
+    // If subtask, append a link to its parent
+    if (isSubtask && fields.parent) {
+      const parentNum = this.keyToNumber.get(fields.parent.key);
       if (parentNum) {
-        body += `\n\n*Parent: [#${parentNum}](https://github.com/${process.env.GH_OWNER}/${process.env.GH_REPO}/issues/${parentNum})*`;
+        body += `\n\n*Parent: [#${parentNum}](https://github.com/${this.owner}/${this.repo}/issues/${parentNum})*`;
       }
     }
 
-    // create issue on GitHub
-    const ghNum = await this.gh.createIssue({
+    // Create the GitHub issue
+    const ghNumber = await this.gh.createIssue({
       title,
       body,
       type,
       labels,
       assignees,
     });
+    this.keyToNumber.set(key, ghNumber);
 
-    // add into Projects
-    const projectItemId = await this.gh.addIssueToProjectV2(ghNum);
+    // Add to project and set fields
+    const projectItemId = await this.gh.addIssueToProjectV2(ghNumber);
+    await this._updateProjectFields(
+      projectItemId,
+      fields.status.id,
+      fields.priority?.name
+    );
 
-    // grab the Jira status ID:
-    const jiraStatusId = fields.status.id;
+    // Migrate comments
+    await this._migrateComments(ghNumber, key);
 
-    // look up the GH option ID:
-    const optionId = this.statusOptionMap[jiraStatusId];
-    if (optionId) {
-      await this.gh.updateProjectV2ItemFieldValue(
-        projectItemId,
-        process.env.GH_PROJECT_V2_STATUS_FIELD_ID,
-        optionId
-      );
-      console.log(`🏷️  Set project “Status” → ${optionId}`);
-    } else {
-      console.warn(`⚠️  No mapping for Jira status ${jiraStatusId}`);
-    }
-
-    // grab the Jira priority ID:
-    const jiraPriorityId = fields.priority?.name;
-
-    const priorityOptionId =
-      this.priorityOptionMap[jiraPriorityId] || "da944a9c";
-    if (priorityOptionId) {
-      await this.gh.updateProjectV2ItemFieldValue(
-        projectItemId,
-        process.env.GH_PROJECT_V2_PRIORITY_FIELD_ID,
-        priorityOptionId
-      );
-      console.log(`🏷️  Set project “Priority” → ${priorityOptionId}`);
-    } else {
-      console.warn(`⚠️  No mapping for Jira priority ${jiraPriorityId}`);
-    }
-
-    // fetch and migrate comments
-    const comments = await this.jira.fetchComments(key);
-    for (const c of comments) {
-      // extract the comment text
-      let text = "";
-      if (typeof c.body === "string") {
-        text = c.body;
-      } else {
-        text = this.extractTextFromADF(c.body);
-      }
-
-      // map Jira accountId to GitHub username
-      const jiraAuthorId = c.author.accountId;
-      const ghUsername = this.userMap[jiraAuthorId];
-      const authorString = ghUsername ? `@${ghUsername}` : c.author.displayName;
-
-      // build the comment body
-      const commentBody = `*Comment by ${authorString} on ${c.created}*\n\n${text}`;
-
-      await this.gh.addComment(ghNum, commentBody);
-      console.log(`💬 Migrated comment ${c.id} for ${key}`);
-    }
-
-    if (isSub) {
-      const parentKey = fields.parent.key;
-      const parentNum = this.keyToNumber.get(parentKey);
+    // Link nested subtask relationships in GitHub
+    if (isSubtask && fields.parent) {
+      const parentNum = this.keyToNumber.get(fields.parent.key);
       if (parentNum) {
-        // nest sub-issue
-        await this.gh.addSubIssue(parentNum, ghNum);
-        console.log(`🔗 Linked ${key} under parent ${parentKey}`);
-      } else {
-        console.warn(
-          `⚠️ Parent ${parentKey} not migrated yet, skipping linkage.`
+        await this.gh.addSubIssue(parentNum, ghNumber);
+        console.log(
+          `🔗 Linked subtask ${key} under parent ${fields.parent.key}`
         );
       }
     }
 
-    this.keyToNumber.set(key, ghNum);
-    console.log(`${isSub ? "📌 Subtask" : "✅ Parent"} ${key} → GH #${ghNum}`);
+    console.log(
+      `${isSubtask ? "📌 Subtask" : "✅ Parent"} ${key} → GH #${ghNumber}`
+    );
+  }
+
+  /**
+   * Build and map labels
+   */
+  _buildLabels(fields) {
+    const set = new Set(fields.labels || []);
+    if (fields.issuetype.name === "Bug") {
+      set.add("bug");
+    }
+    return Array.from(set);
+  }
+
+  /**
+   * Map Jira assignee to GitHub username.
+   */
+  _buildAssignees(fields) {
+    const jiraId = fields.assignee?.accountId;
+    const user = jiraId && this.userMap[jiraId];
+    return user ? [user] : [];
+  }
+
+  /**
+   * Update project status and priority fields using ghConfig IDs.
+   */
+  async _updateProjectFields(itemId, statusId, priorityName) {
+    if (!itemId) return;
+
+    const statusOption = this.statusOptionMap[statusId];
+    if (statusOption) {
+      await this.gh.updateProjectV2ItemFieldValue(
+        itemId,
+        this.projectV2StatusFieldId,
+        statusOption
+      );
+    }
+
+    const priorityOption =
+      this.priorityOptionMap[priorityName] || this.defaultPriorityOption;
+    if (priorityOption) {
+      await this.gh.updateProjectV2ItemFieldValue(
+        itemId,
+        this.projectV2PriorityFieldId,
+        priorityOption
+      );
+    }
+  }
+
+  /**
+   * Migrate all comments for the given Jira key into the GitHub issue.
+   */
+  async _migrateComments(ghNumber, jiraKey) {
+    const comments = await this.jira.fetchComments(jiraKey);
+    const tasks = comments.map((c) => {
+      const text = this.extractText(c.body);
+      const author = this.userMap[c.author.accountId]
+        ? `@${this.userMap[c.author.accountId]}`
+        : c.author.displayName;
+      const commentBody = `*Comment by ${author} on ${c.created}*\n\n${text}`;
+      return this.gh
+        .addComment(ghNumber, commentBody)
+        .then(() => console.log(`💬 Migrated comment ${c.id} for ${jiraKey}`));
+    });
+    await Promise.all(tasks);
   }
 }

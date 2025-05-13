@@ -1,13 +1,17 @@
-import { Octokit } from "@octokit/rest";
-import { graphql } from "@octokit/graphql";
 import { ghConfig } from "../config.js";
+import { graphql } from "@octokit/graphql";
+import { Octokit } from "@octokit/rest";
+import fetch from "node-fetch";
 
 export class GitHubClient {
   constructor() {
-    // REST client for creating issues & comments
-    this.octokit = new Octokit({ auth: ghConfig.token });
-    // GraphQL client for sub-issue linkage
+    this.octokit = new Octokit({
+      auth: ghConfig.token,
+      request: { fetch },
+    });
+
     this.graphql = graphql.defaults({
+      request: { fetch },
       headers: { authorization: `token ${ghConfig.token}` },
     });
   }
