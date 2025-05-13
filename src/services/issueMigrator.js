@@ -17,6 +17,9 @@ export class IssueMigrator {
     this.userMap = userMap;
     this.keyToNumber = new Map();
 
+    // track any related‐links we couldn't yet resolve
+    this.pendingRelations = [];
+
     // Use centralized GitHub configuration
     this.owner = ghConfig.owner;
     this.repo = ghConfig.repo;
@@ -63,6 +66,9 @@ export class IssueMigrator {
         console.error(`Failed migrating ${issue.key}:`, err);
       }
     }
+
+    // Patch any pending relations
+    await this._patchPendingRelations();
   }
 
   /**
@@ -72,12 +78,14 @@ export class IssueMigrator {
     const { key, fields } = issue;
     const isSubtask = Boolean(fields.issuetype.subtask);
     const title = `[${key}] ${fields.summary}`;
+
     let body = this.extractText(fields.description);
+    body = this._appendRelatedIssues(body, fields.issuelinks, key);
+
     const assignees = this._buildAssignees(fields);
     const labels = this._buildLabels(fields);
     const type =
       this.issueTypeMap[fields.issuetype.name] || fields.issuetype.name;
-    body = this._appendRelatedIssues(body, fields.issuelinks);
 
     // Create the GitHub issue
     const ghNumber = await this.gh.createIssue({
@@ -165,7 +173,7 @@ export class IssueMigrator {
   /**
    * Append all Jira issue-links as “Related” entries in the body.
    */
-  _appendRelatedIssues(body, issueLinks = []) {
+  _appendRelatedIssues(body, issueLinks = [], sourceKey) {
     if (!Array.isArray(issueLinks) || issueLinks.length === 0) {
       return body;
     }
@@ -176,17 +184,19 @@ export class IssueMigrator {
         const jiraKey = link.outwardIssue.key;
         const relType = link.type.name; // e.g. “Blocks”, “Cloners”
         const ghNum = this.keyToNumber.get(jiraKey);
+
+        if (!ghNum) {
+          this.pendingRelations.push({ sourceKey, jiraKey, relType });
+        }
+
         const target = ghNum
           ? `[#${ghNum}](https://github.com/${this.owner}/${this.repo}/issues/${ghNum})`
-          : jiraKey;
+          : jiraKey; // placeholder for now
 
         return `*${relType} ${target}*`;
       });
 
-    if (lines.length === 0) {
-      return body;
-    }
-
+    if (lines.length === 0) return body;
     return `${body}\n\n---\n**Related:**\n${lines.join("\n")}`;
   }
 
@@ -206,5 +216,37 @@ export class IssueMigrator {
         .then(() => console.log(`💬 Migrated comment ${c.id} for ${jiraKey}`));
     });
     await Promise.all(tasks);
+  }
+
+  /**
+   * After every issue has been created, go back and replace any
+   * “*Blocks JIRA-123*” placeholders with real GH links.
+   */
+  async _patchPendingRelations() {
+    for (const { sourceKey, jiraKey, relType } of this.pendingRelations) {
+      const sourceNum = this.keyToNumber.get(sourceKey);
+      const targetNum = this.keyToNumber.get(jiraKey);
+
+      if (sourceNum && targetNum) {
+        // fetch current issue body
+        const { body: currentBody } = await this.gh.getIssue(sourceNum);
+        const placeholder = `*${relType} ${jiraKey}*`;
+        const replacement = `*${relType} [#${targetNum}](https://github.com/${this.owner}/${this.repo}/issues/${targetNum})*`;
+
+        const updatedBody = currentBody.replace(
+          new RegExp(placeholder, "g"),
+          replacement
+        );
+
+        await this.gh.updateIssue(sourceNum, { body: updatedBody });
+        console.log(
+          `🔄 Patched relation ${relType}→${jiraKey} into GH #${sourceNum}`
+        );
+      } else {
+        console.warn(
+          `⚠️ Cannot patch ${relType}→${jiraKey} for ${sourceKey}: migration missing`
+        );
+      }
+    }
   }
 }

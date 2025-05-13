@@ -29,6 +29,26 @@ export class GitHubClient {
     return data.number;
   }
 
+  async getIssue(issueNumber) {
+    const { data } = await this.octokit.issues.get({
+      owner: ghConfig.owner,
+      repo: ghConfig.repo,
+      issue_number: issueNumber,
+    });
+    return data;
+  }
+
+  async updateIssue(issueNumber, { body, state, state_reason }) {
+    await this.octokit.issues.update({
+      owner: ghConfig.owner,
+      repo: ghConfig.repo,
+      issue_number: issueNumber,
+      ...(body && { body }),
+      ...(state && { state }),
+      ...(state_reason && { state_reason }),
+    });
+  }
+
   async addComment(issueNumber, comment) {
     await this.octokit.issues.createComment({
       owner: ghConfig.owner,
