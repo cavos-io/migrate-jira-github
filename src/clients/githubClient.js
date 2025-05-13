@@ -90,9 +90,30 @@ export class GitHubClient {
       }
     `;
 
-    await this.graphql(mutation, {
+    const result = await this.graphql(mutation, {
       projectId: projectV2Id,
       contentId,
+    });
+
+    return result.addProjectV2ItemById.item.id;
+  }
+
+  // GraphQL mutation update Project status
+  async updateProjectV2ItemFieldValue(itemId, fieldId, optionId) {
+    const mutation = `
+      mutation($input: UpdateProjectV2ItemFieldValueInput!) {
+        updateProjectV2ItemFieldValue(input: $input) {
+          projectV2Item { id }
+        }
+      }
+    `;
+    await this.graphql(mutation, {
+      input: {
+        projectId: ghConfig.projectV2Id,
+        itemId,
+        fieldId,
+        value: { singleSelectOptionId: optionId },
+      },
     });
   }
 }

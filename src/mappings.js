@@ -3,6 +3,14 @@ export const issueTypeMap = {
   "Sub-task": "Code",
 };
 
+export const statusOptionMap = {
+  10058: "f75ad846", // Backlog - Backlog
+  10059: "61e4505c", // Selected for Dev - Ready
+  3: "47fc9ee4", // In progress - In progress
+  10068: "df73e18b", // Testing - In review
+  10060: "98236657", // Done - Done
+};
+
 export const userMap = {
   "712020:da19598c-530f-4568-8dca-93ed3eab8b1b": "cavos-ramdhan",
   // "712020:d5958a52-55f5-4f15-b62f-63e67d699046": "", // Andik

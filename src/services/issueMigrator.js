@@ -1,8 +1,15 @@
 export class IssueMigrator {
-  constructor(jiraClient, githubClient, issueTypeMap, userMap) {
+  constructor(
+    jiraClient,
+    githubClient,
+    issueTypeMap,
+    statusOptionMap,
+    userMap
+  ) {
     this.jira = jiraClient;
     this.gh = githubClient;
     this.issueTypeMap = issueTypeMap;
+    this.statusOptionMap = statusOptionMap;
     this.userMap = userMap;
     this.keyToNumber = new Map();
   }
@@ -98,7 +105,23 @@ export class IssueMigrator {
     });
 
     // add into Projects
-    await this.gh.addIssueToProjectV2(ghNum);
+    const projectItemId = await this.gh.addIssueToProjectV2(ghNum);
+
+    // grab the Jira status ID:
+    const jiraStatusId = fields.status.id;
+
+    // look up the GH option ID:
+    const optionId = this.statusOptionMap[jiraStatusId];
+    if (optionId) {
+      await this.gh.updateProjectV2ItemFieldValue(
+        projectItemId,
+        process.env.GH_PROJECT_V2_STATUS_FIELD_ID,
+        optionId
+      );
+      console.log(`🏷️  Set project “Status” → ${optionId}`);
+    } else {
+      console.warn(`⚠️  No mapping for Jira status ${jiraStatusId}`);
+    }
 
     // fetch and migrate comments
     const comments = await this.jira.fetchComments(key);

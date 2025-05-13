@@ -26,4 +26,5 @@ export const ghConfig = {
   repo: process.env.GH_REPO,
   token: process.env.GH_TOKEN,
   projectV2Id: process.env.GH_PROJECT_V2_ID,
+  statusFieldId: process.env.GH_PROJECT_V2_STATUS_FIELD_ID,
 };
