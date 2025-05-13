@@ -7,7 +7,12 @@
     "@octokit/rest": "^21.1.1",
     "axios": "^1.9.0",
     "dotenv": "^16.5.0",
+    "he": "^1.2.0",
+    "mdast-util-from-adf": "^2.1.1",
     "node-fetch": "^3.3.2",
+    "remark-gfm": "^4.0.1",
+    "remark-stringify": "^11.0.0",
+    "unified": "^11.0.5",
     "yargs": "^17.7.2"
   },
   "type": "module"

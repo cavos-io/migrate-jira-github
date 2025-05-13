@@ -1,3 +1,5 @@
+import { adfToMarkdown } from "../utils/adfConverter.js";
+
 export class IssueMigrator {
   constructor(
     jiraClient,
@@ -60,20 +62,7 @@ export class IssueMigrator {
   }
 
   extractText(adf) {
-    if (!adf) return "";
-    if (typeof adf === "string") return adf;
-    // simple one-level ADF flatten
-    return (
-      adf.content
-        .map((block) =>
-          (block.content || [])
-            .filter((node) => typeof node.text === "string")
-            .map((node) => node.text)
-            .join("")
-        )
-        .filter(Boolean)
-        .join("\n\n") || ""
-    );
+    return adfToMarkdown(adf, this.userMap);
   }
 
   async migrate() {
