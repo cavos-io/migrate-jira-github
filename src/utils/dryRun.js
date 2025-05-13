@@ -13,6 +13,22 @@ export default function applyDryRunToClient(client) {
     console.log(`[Dry-Run] updateIssue #${num} →`, opts);
   };
 
+  client.uploadAttachment = async function (
+    issueNumber,
+    fileBuffer,
+    filename,
+    mimeType
+  ) {
+    console.log(
+      `[Dry-Run] uploadAttachment #${issueNumber} → ${filename} ` +
+        `(${fileBuffer.length} bytes, ${mimeType})`
+    );
+    return {
+      id: issueNumber,
+      url: `https://dry.run./${filename}`,
+    };
+  };
+
   client.addComment = async function (num, comment) {
     console.log(`[Dry-Run] addComment #${num} →`, comment);
   };

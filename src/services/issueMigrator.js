@@ -127,6 +127,38 @@ export class IssueMigrator {
     });
     this.keyToNumber.set(key, ghNumber);
 
+    // migrate attachments
+    const jiraAttachments = await this.jira.fetchAttachments(key);
+    const urlMap = {};
+    await Promise.all(
+      jiraAttachments.map(async (a) => {
+        try {
+          const buf = await this.jira.downloadAttachment(a.content);
+          const { url } = await ghClient.uploadAttachment(
+            ghNumber,
+            buf,
+            a.filename,
+            a.mimeType
+          );
+          urlMap[a.content] = url;
+        } catch (err) {
+          console.error(
+            `❌ Failed processing attachment "${a.filename}" on ${key}:`,
+            err
+          );
+        }
+      })
+    );
+
+    let newBody = body;
+    for (const [oldUrl, newUrl] of Object.entries(urlMap)) {
+      newBody = newBody.replace(new RegExp(escapeRegExp(oldUrl), "g"), newUrl);
+    }
+
+    if (newBody !== body) {
+      await ghClient.updateIssue(ghNumber, { body: newBody });
+    }
+
     // add to project & set status/priority
     const projectItemId = await ghClient.addIssueToProjectV2(ghNumber);
     await this._updateProjectFields(
@@ -137,7 +169,7 @@ export class IssueMigrator {
     );
 
     // migrate comments
-    await this._migrateComments(ghNumber, key);
+    await this._migrateComments(ghNumber, key, urlMap);
 
     // link subtasks under parent
     if (isSubtask && fields.parent) {
@@ -226,32 +258,29 @@ export class IssueMigrator {
       : body;
   }
 
-  async _migrateComments(ghNumber, jiraKey) {
+  async _migrateComments(ghNumber, jiraKey, urlMap) {
     const comments = await this.jira.fetchComments(jiraKey);
 
     await Promise.all(
       comments.map(async (c) => {
-        const text = this.extractText(c.body);
-        const jiraId = c.author.accountId;
-        const ghUsername = this.userMap[jiraId];
-        const personalTokens = this._defaultGhClient.personalTokens || {};
-        const token =
-          (ghUsername && personalTokens[ghUsername]) ||
-          this._defaultGhClient.authToken;
-        const client = this._getGhClient(token);
-
-        if (!ghUsername || !personalTokens[ghUsername]) {
-          console.warn(
-            `No personal token for comment author ${jiraId}; using default token`
-          );
+        let text = this.extractText(c.body);
+        for (const [oldUrl, newUrl] of Object.entries(urlMap)) {
+          text = text.replace(new RegExp(escapeRegExp(oldUrl), "g"), newUrl);
         }
 
+        const jiraId = c.author.accountId;
+        const ghUsername = this.userMap[jiraId];
         const authorMention = ghUsername
           ? `@${ghUsername}`
           : c.author.displayName;
         const prefix = ghUsername
           ? `*Comment by ${authorMention} on ${c.created}*\n\n`
           : `*Comment by ${c.author.displayName} in Jira*\n\n*Comment by ${authorMention} on ${c.created}*\n\n`;
+
+        const client = this._getGhClient(
+          (ghUsername && this._defaultGhClient.personalTokens[ghUsername]) ||
+            this._defaultGhClient.authToken
+        );
 
         await client.addComment(ghNumber, prefix + text);
         console.log(`💬 Migrated comment ${c.id} for ${jiraKey}`);
@@ -283,4 +312,8 @@ export class IssueMigrator {
       }
     }
   }
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

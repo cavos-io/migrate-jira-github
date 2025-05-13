@@ -27,6 +27,7 @@ export class JiraClient {
             "parent",
             "subtasks",
             "issuelinks",
+            "attachment",
             "labels",
             "status",
             "creator",
@@ -40,6 +41,26 @@ export class JiraClient {
       startAt += resp.data.maxResults;
     }
     return all;
+  }
+
+  async fetchAttachments(issueKey) {
+    const { data } = await this.client.get(`/issue/${issueKey}`, {
+      params: { fields: "attachment" },
+    });
+    return data.fields.attachment;
+  }
+
+  async downloadAttachment(url) {
+    try {
+      const resp = await axios.get(url, {
+        auth: this.client.defaults.auth,
+        responseType: "arraybuffer",
+      });
+      return resp.data;
+    } catch (err) {
+      console.error(`❌ Jira downloadAttachment failed for ${url}:`, err);
+      throw err;
+    }
   }
 
   async fetchComments(issueKey) {

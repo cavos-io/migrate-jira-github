@@ -9,6 +9,8 @@ const required = [
   "GH_OWNER",
   "GH_REPO",
   "GH_TOKEN",
+  "GH_USER",
+  "GH_PASSWORD",
 ];
 required.forEach((k) => {
   if (!process.env[k]) throw new Error(`Missing env var ${k}`);
@@ -33,4 +35,9 @@ export const ghConfig = {
   personalTokens: process.env.GH_USER_TOKENS
     ? JSON.parse(process.env.GH_USER_TOKENS)
     : {},
+};
+
+export const ghAuth = {
+  username: process.env.GH_USER,
+  password: process.env.GH_PASSWORD,
 };

@@ -1,21 +1,25 @@
 import { graphql } from "@octokit/graphql";
 import { Octokit } from "@octokit/rest";
-import fetch from "node-fetch";
+import fetch, { FormData, Blob } from "node-fetch";
 
 export class GitHubClient {
-  constructor({
-    owner,
-    repo,
-    token,
-    projectV2Id,
-    projectV2StatusFieldId,
-    projectV2PriorityFieldId,
-    defaultPriorityOption,
-    personalTokens,
-  }) {
+  constructor(
+    {
+      owner,
+      repo,
+      token,
+      projectV2Id,
+      projectV2StatusFieldId,
+      projectV2PriorityFieldId,
+      defaultPriorityOption,
+      personalTokens,
+    },
+    browserCookie = ""
+  ) {
     this.owner = owner;
     this.repo = repo;
     this.authToken = token;
+    this.browserCookie = browserCookie;
     this.projectV2Id = projectV2Id;
     this.projectV2StatusFieldId = projectV2StatusFieldId;
     this.projectV2PriorityFieldId = projectV2PriorityFieldId;
@@ -60,6 +64,127 @@ export class GitHubClient {
       ...(state && { state }),
       ...(state_reason && { state_reason }),
     });
+  }
+
+  async getRepoId() {
+    if (this._repoId) return this._repoId;
+    const { data } = await this.octokit.repos.get({
+      owner: this.owner,
+      repo: this.repo,
+    });
+    this._repoId = data.id;
+    return data.id;
+  }
+
+  async fetchUploadPolicy(issueNumber, fileName, size, mimeType) {
+    const repoId = await this.getRepoId();
+
+    const form = new FormData();
+    form.append("repository_id", String(repoId));
+    form.append("name", fileName);
+    form.append("size", String(size));
+    form.append("content_type", mimeType);
+
+    const headers = {
+      cookie: this.browserCookie,
+      origin: "https://github.com",
+      referer: `https://github.com/${this.owner}/${this.repo}/issues/${issueNumber}`,
+      "x-requested-with": "XMLHttpRequest",
+      "github-verified-fetch": "true",
+      accept: "application/json",
+    };
+
+    const resp = await fetch("https://github.com/upload/policies/assets", {
+      method: "POST",
+      headers,
+      body: form,
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch upload policy: ${resp.status}`);
+    }
+    return resp.json();
+  }
+
+  async postToS3(policy, fileBuffer, fileName) {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(policy.form)) {
+      form.append(k, v);
+    }
+
+    const blob = new Blob([fileBuffer], { type: policy.form.content_type });
+    form.append("file", blob, fileName);
+
+    const resp = await fetch(policy.upload_url, {
+      method: "POST",
+      body: form,
+    });
+
+    const body = await resp.text();
+    console.log("⤷ postToS3 response:", {
+      status: resp.status,
+      statusText: resp.statusText,
+      body,
+    });
+
+    if (!resp.ok) {
+      throw new Error(`S3 upload failed: ${resp.status}`);
+    }
+
+    return body;
+  }
+
+  async registerAsset(policy, issueNumber) {
+    const url = `https://github.com${policy.asset_upload_url}`;
+    const form = new FormData();
+    form.append("authenticity_token", policy.asset_upload_authenticity_token);
+
+    const headers = {
+      Accept: "application/json",
+      Cookie: this.browserCookie,
+      Origin: "https://github.com",
+      Referer: `https://github.com/${this.owner}/${this.repo}/issues/${issueNumber}`,
+      "X-Requested-With": "XMLHttpRequest",
+      "github-verified-fetch": "true",
+    };
+
+    const resp = await fetch(url, { method: "PUT", headers, body: form });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Asset registration failed: ${resp.status} ${text}`);
+    }
+
+    const data = await resp.json();
+    console.log("⤷ registerAsset response:", data);
+    if (!data.href) {
+      throw new Error(
+        `No asset URL found in registerAsset response: ${JSON.stringify(data)}`
+      );
+    }
+
+    return data.href;
+  }
+
+  async uploadAttachment(issueNumber, fileBuffer, fileName, mimeType) {
+    if (!this.browserCookie) {
+      throw new Error(
+        "uploadAttachment requires a valid GitHub browser cookie"
+      );
+    }
+
+    const policy = await this.fetchUploadPolicy(
+      issueNumber,
+      fileName,
+      fileBuffer.length,
+      mimeType
+    );
+
+    console.log("⤷ upload policy:", policy);
+
+    await this.postToS3(policy, fileBuffer, fileName);
+
+    const href = await this.registerAsset(policy, issueNumber);
+    return { id: policy.asset.id, url: href };
   }
 
   async addComment(issueNumber, comment) {

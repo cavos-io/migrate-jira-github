@@ -2,17 +2,18 @@
 import "dotenv/config";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { jiraConfig, ghConfig } from "../config.js";
 import {
   issueTypeMap,
   priorityOptionMap,
   statusOptionMap,
   userMap,
 } from "../mappings.js";
+import { jiraConfig, ghConfig } from "../config.js";
 import { JiraClient } from "../clients/jiraClient.js";
 import { GitHubClient } from "../clients/githubClient.js";
-import applyDryRunToClient from "../utils/dryRun.js";
+import { getGitHubBrowserCookie } from "../utils/getBrowserCookie.js";
 import { IssueMigrator } from "../services/issueMigrator.js";
+import applyDryRunToClient from "../utils/dryRun.js";
 
 async function main() {
   const { dryRun } = yargs(hideBin(process.argv))
@@ -20,7 +21,8 @@ async function main() {
     .parseSync();
 
   const jiraClient = new JiraClient(jiraConfig);
-  const githubClient = new GitHubClient(ghConfig);
+  const browserCookie = await getGitHubBrowserCookie();
+  const githubClient = new GitHubClient(ghConfig, browserCookie);
 
   if (dryRun) {
     console.log("⚡️ DRY RUN mode: no changes will be pushed to GitHub");

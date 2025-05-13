@@ -28,6 +28,20 @@ export function adfToMarkdown(adf, mentionMap = {}) {
         marks: node.marks ?? [],
       };
     }
+
+    if (
+      (node.type === "media" || node.type === "mediaSingle") &&
+      node.attrs?.url
+    ) {
+      const alt = node.attrs.filename || node.attrs.type || "";
+      const url = node.attrs.url;
+      return {
+        type: "text",
+        text: `![${alt}](${url})`,
+        marks: node.marks ?? [],
+      };
+    }
+
     return node;
   };
 
