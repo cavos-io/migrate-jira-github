@@ -41,4 +41,11 @@ export class JiraClient {
 
     return all;
   }
+
+  async fetchComments(issueKey) {
+    const resp = await this.client.get(`/issue/${issueKey}/comment`, {
+      params: { maxResults: 1000 },
+    });
+    return resp.data.comments;
+  }
 }

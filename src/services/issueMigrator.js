@@ -1,9 +1,9 @@
 export class IssueMigrator {
-  constructor(jiraClient, githubClient, issueTypeMap, assigneeMap) {
+  constructor(jiraClient, githubClient, issueTypeMap, userMap) {
     this.jira = jiraClient;
     this.gh = githubClient;
     this.issueTypeMap = issueTypeMap;
-    this.assigneeMap = assigneeMap;
+    this.userMap = userMap;
     this.keyToNumber = new Map();
   }
 
@@ -60,7 +60,7 @@ export class IssueMigrator {
 
     // map Jira accountId to GitHub username
     const jiraId = fields.assignee?.accountId;
-    const ghUser = jiraId ? this.assigneeMap[jiraId] : undefined;
+    const ghUser = jiraId ? this.userMap[jiraId] : undefined;
     const assignees = ghUser ? [ghUser] : [];
 
     // grab raw description
@@ -96,6 +96,29 @@ export class IssueMigrator {
       labels,
       assignees,
     });
+
+    // fetch and migrate comments
+    const comments = await this.jira.fetchComments(key);
+    for (const c of comments) {
+      // extract the comment text
+      let text = "";
+      if (typeof c.body === "string") {
+        text = c.body;
+      } else {
+        text = this.extractTextFromADF(c.body);
+      }
+
+      // map Jira accountId to GitHub username
+      const jiraAuthorId = c.author.accountId;
+      const ghUsername = this.userMap[jiraAuthorId];
+      const authorString = ghUsername ? `@${ghUsername}` : c.author.displayName;
+
+      // build the comment body
+      const commentBody = `*Comment by ${authorString} on ${c.created}*\n\n${text}`;
+
+      await this.gh.addComment(ghNum, commentBody);
+      console.log(`💬 Migrated comment ${c.id} for ${key}`);
+    }
 
     if (isSub) {
       const parentKey = fields.parent.key;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { issueTypeMap, assigneeMap } from "../mappings.js";
+import { issueTypeMap, userMap } from "../mappings.js";
 import { JiraClient } from "../clients/jiraClient.js";
 import { GitHubClient } from "../clients/githubClient.js";
 import { IssueMigrator } from "../services/issueMigrator.js";
@@ -10,7 +10,7 @@ async function main() {
     new JiraClient(),
     new GitHubClient(),
     issueTypeMap,
-    assigneeMap
+    userMap
   );
 
   try {
