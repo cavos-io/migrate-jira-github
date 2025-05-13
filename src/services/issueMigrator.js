@@ -5,10 +5,12 @@ export class IssueMigrator {
     issueTypeMap,
     priorityOptionMap,
     statusOptionMap,
-    userMap
+    userMap,
+    options = {}
   ) {
     this.jira = jiraClient;
     this._defaultGhClient = githubClient;
+    this.dryRun = options.dryRun || false;
     this.issueTypeMap = issueTypeMap;
     this.priorityOptionMap = priorityOptionMap;
     this.statusOptionMap = statusOptionMap;
@@ -43,6 +45,15 @@ export class IssueMigrator {
         token,
       };
       const client = new this._defaultGhClient.constructor(baseConfig);
+
+      if (this.dryRun) {
+        import("../utils/dryRun.js").then(
+          ({ default: applyDryRunToClient }) => {
+            applyDryRunToClient(client);
+          }
+        );
+      }
+
       this._ghClients.set(token, client);
     }
     return this._ghClients.get(token);
