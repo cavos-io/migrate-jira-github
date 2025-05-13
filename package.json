@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "migrate": "node migrate.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.1.1",
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0"
+  },
+  "type": "module"
+}
