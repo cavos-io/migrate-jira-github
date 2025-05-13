@@ -77,14 +77,7 @@ export class IssueMigrator {
     const labels = this._buildLabels(fields);
     const type =
       this.issueTypeMap[fields.issuetype.name] || fields.issuetype.name;
-
-    // If subtask, append a link to its parent
-    if (isSubtask && fields.parent) {
-      const parentNum = this.keyToNumber.get(fields.parent.key);
-      if (parentNum) {
-        body += `\n\n*Parent: [#${parentNum}](https://github.com/${this.owner}/${this.repo}/issues/${parentNum})*`;
-      }
-    }
+    body = this._appendRelatedIssues(body, fields.issuelinks);
 
     // Create the GitHub issue
     const ghNumber = await this.gh.createIssue({
@@ -167,6 +160,34 @@ export class IssueMigrator {
         priorityOption
       );
     }
+  }
+
+  /**
+   * Append all Jira issue-links as “Related” entries in the body.
+   */
+  _appendRelatedIssues(body, issueLinks = []) {
+    if (!Array.isArray(issueLinks) || issueLinks.length === 0) {
+      return body;
+    }
+
+    const lines = issueLinks
+      .filter((link) => link.outwardIssue)
+      .map((link) => {
+        const jiraKey = link.outwardIssue.key;
+        const relType = link.type.name; // e.g. “Blocks”, “Cloners”
+        const ghNum = this.keyToNumber.get(jiraKey);
+        const target = ghNum
+          ? `[#${ghNum}](https://github.com/${this.owner}/${this.repo}/issues/${ghNum})`
+          : jiraKey;
+
+        return `*${relType} ${target}*`;
+      });
+
+    if (lines.length === 0) {
+      return body;
+    }
+
+    return `${body}\n\n---\n**Related:**\n${lines.join("\n")}`;
   }
 
   /**
