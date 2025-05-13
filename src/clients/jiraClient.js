@@ -31,6 +31,7 @@ export class JiraClient {
             "parent",
             "labels",
             "assignee",
+            "status",
           ],
         },
       });

@@ -97,6 +97,15 @@ export class IssueMigrator {
     });
     this.keyToNumber.set(key, ghNumber);
 
+    // Set the issue state
+    if (fields.status?.statusCategory?.name === "Done") {
+      await this.gh.updateIssue(ghNumber, {
+        state: "closed",
+        state_reason: "completed",
+      });
+      console.log(`🔒 Closed GH #${ghNumber} (Jira ${key} was Done)`);
+    }
+
     // Add to project and set fields
     const projectItemId = await this.gh.addIssueToProjectV2(ghNumber);
     await this._updateProjectFields(
