@@ -1,12 +1,16 @@
 import fetch, { Response, RequestInit } from "node-fetch";
 import { JSDOM } from "jsdom";
 import { load } from "cheerio";
-import { TOTP } from "otpauth";
+import { TOTP, Secret } from "otpauth";
 import { ghAuth } from "../config";
 
+// GitHub endpoints and headers
+const GITHUB_LOGIN_URL = "https://github.com/login";
+const GITHUB_SESSION_URL = "https://github.com/session";
+const GITHUB_2FA_URL = "https://github.com/sessions/two-factor";
 const USER_AGENT = "Mozilla/5.0";
 
-// Cache the last cookie string
+// Cache the authenticated cookie string
 let cachedCookie: string | null = null;
 
 interface FetchResult {
@@ -14,163 +18,163 @@ interface FetchResult {
   text: string;
 }
 
-/** Merge an array of Set-Cookie headers into our existing cookie jar string */
-function mergeCookies(
-  cookieJar: string,
-  setCookieHeaders: string[] = []
-): string {
-  let jar = cookieJar;
-  for (const header of setCookieHeaders) {
-    const pair = header.split(";")[0]; // "name=value"
+/**
+ * Merge new Set-Cookie headers into an existing cookie jar string
+ */
+function mergeCookies(jar: string, setCookie: string[] = []): string {
+  return setCookie.reduce((cookieJar, header) => {
+    const pair = header.split(";")[0];
     const [name] = pair.split("=");
-    const re = new RegExp(`${name}=[^;]+`);
-    jar = re.test(jar) ? jar.replace(re, pair) : `${jar}; ${pair}`;
+    const regex = new RegExp(`${name}=[^;]+`);
+    return regex.test(cookieJar)
+      ? cookieJar.replace(regex, pair)
+      : `${cookieJar}; ${pair}`;
+  }, jar);
+}
+
+/**
+ * Extract the CSRF authenticity token from HTML
+ */
+function extractCsrfToken(html: string): string {
+  const document = new JSDOM(html).window.document;
+  const input = document
+    .querySelector('input[name="authenticity_token"]')
+    ?.getAttribute("value");
+  const meta = document
+    .querySelector('meta[name="csrf-token"]')
+    ?.getAttribute("content");
+  if (!input && !meta) {
+    throw new Error("CSRF token not found in HTML");
   }
-  return jar;
+  return input || meta!;
 }
 
-/** Extract CSRF token from GitHub page HTML (hidden input or meta tag) */
-function extractCsrfToken(html: string): string | null {
-  const dom = new JSDOM(html).window.document;
-  return (
-    dom
-      .querySelector('input[name="authenticity_token"]')
-      ?.getAttribute("value") ||
-    dom.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ||
-    null
-  );
-}
-
-/** Perform a fetch without following redirects */
+/**
+ * Perform a fetch without following redirects, returning both response and body text
+ */
 async function fetchNoRedirect(
   url: string,
   options: RequestInit = {}
 ): Promise<FetchResult> {
-  const res = await fetch(url, { ...options, redirect: "manual" });
+  const res = await fetch(url, {
+    ...options,
+    redirect: "manual",
+    headers: { "User-Agent": USER_AGENT, ...options.headers },
+  });
   const text = await res.text();
   return { res, text };
 }
 
-/** Handle the two-factor challenge: GET the 2FA form, generate TOTP, POST it */
-async function doTwoFactor(
+/**
+ * Handle the GitHub 2FA flow by trying a sliding window of OTP codes
+ */
+async function handleTwoFactor(
   cookieJar: string,
   twoFaLocation: string,
-  twoFactorSecret: string
+  secret: string
 ): Promise<string> {
-  const twoFaUrl = twoFaLocation.startsWith("http")
+  const url = twoFaLocation.startsWith("http")
     ? twoFaLocation
-    : `https://github.com${twoFaLocation}`;
+    : new URL(twoFaLocation, "https://github.com").href;
 
-  // 1) GET the 2FA page
-  const { res: twoFaRes, text: twoFaHtml } = await fetchNoRedirect(twoFaUrl, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      Cookie: cookieJar,
-      Referer: "https://github.com/session",
-    },
+  // Fetch 2FA form
+  const { res: getRes, text: getHtml } = await fetchNoRedirect(url, {
+    headers: { Cookie: cookieJar, Referer: GITHUB_SESSION_URL },
   });
-  cookieJar = mergeCookies(cookieJar, twoFaRes.headers.raw()["set-cookie"]);
+  cookieJar = mergeCookies(cookieJar, getRes.headers.raw()["set-cookie"]);
 
-  // 2) Extract CSRF token
-  const token = extractCsrfToken(twoFaHtml);
-  if (!token) {
-    throw new Error("Could not find authenticity_token on 2FA page");
-  }
+  const csrfToken = extractCsrfToken(getHtml);
 
-  // 3) Generate TOTP code
-  const totp = new TOTP({ secret: twoFactorSecret, digits: 6, period: 30 });
-  const otp = totp.generate();
+  // Prepare TOTP generator
+  const totp = new TOTP({
+    secret: Secret.fromBase32(secret.trim()),
+    digits: 6,
+    period: 30,
+    algorithm: "SHA1",
+  });
 
-  // 4) POST the OTP
-  const form = new URLSearchParams({ authenticity_token: token, otp });
-  const { res: otpRes, text: otpHtml } = await fetchNoRedirect(
-    "https://github.com/sessions/two-factor",
-    {
-      method: "POST",
-      headers: {
-        "User-Agent": USER_AGENT,
-        "Content-Type": "application/x-www-form-urlencoded",
-        Cookie: cookieJar,
-        Referer: twoFaUrl,
-      },
-      body: form,
+  // Try codes for [prev, now, next] 30-second windows
+  const step = totp.period * 1000;
+  const timestamps = [Date.now() - step, Date.now(), Date.now() + step];
+
+  for (const ts of timestamps) {
+    const otp = totp.generate({ timestamp: ts });
+    const form = new URLSearchParams({ authenticity_token: csrfToken, otp });
+    const { res: postRes, text: postHtml } = await fetchNoRedirect(
+      GITHUB_2FA_URL,
+      {
+        method: "POST",
+        headers: {
+          Cookie: cookieJar,
+          Referer: url,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: form,
+      }
+    );
+    cookieJar = mergeCookies(cookieJar, postRes.headers.raw()["set-cookie"]);
+    if (postRes.status === 302) {
+      return cookieJar;
     }
-  );
-  cookieJar = mergeCookies(cookieJar, otpRes.headers.raw()["set-cookie"]);
-
-  if (otpRes.status !== 302) {
-    const $ = load(otpHtml);
-    throw new Error(`2FA failed: ${$(".flash-error").text().trim()}`);
+    // else continue to next candidate
   }
 
-  return cookieJar;
+  // If we reach here, all attempts failed
+  const $ = load((await fetchNoRedirect(GITHUB_2FA_URL)).text);
+  throw new Error(`2FA failed: ${$(".flash-error").text().trim()}`);
 }
 
 /**
- * Get a valid GitHub browser cookie string, handling login and 2FA as needed.
- * Results are cached for subsequent calls.
+ * Obtain a valid GitHub session cookie, performing login and 2FA as needed.
  */
 export async function getGitHubBrowserCookie(): Promise<string> {
-  if (cachedCookie) {
-    return cachedCookie;
-  }
+  if (cachedCookie) return cachedCookie;
 
   const { username, password, twoFactorSecret } = ghAuth;
   if (!username || !password) {
-    throw new Error("GitHub credentials are not set in ghAuth");
+    throw new Error("GH_USER and GH_PASSWORD must be set in environment");
   }
 
-  // 1) GET the login page
-  const { res: loginRes, text: loginHtml } = await fetchNoRedirect(
-    "https://github.com/login",
-    { headers: { "User-Agent": USER_AGENT } }
-  );
+  // Step 1: GET login page
+  const { res: loginRes, text: loginHtml } =
+    await fetchNoRedirect(GITHUB_LOGIN_URL);
   let cookieJar = mergeCookies("", loginRes.headers.raw()["set-cookie"]);
 
-  // 2) Extract CSRF token
+  // Step 2: POST credentials
   const loginToken = extractCsrfToken(loginHtml);
-  if (!loginToken) {
-    throw new Error("No authenticity_token on login page");
-  }
-
-  // 3) POST credentials
-  const form = new URLSearchParams({
+  const loginForm = new URLSearchParams({
     login: username,
     password,
     authenticity_token: loginToken,
     commit: "Sign in",
   });
   const { res: postRes, text: postHtml } = await fetchNoRedirect(
-    "https://github.com/session",
+    GITHUB_SESSION_URL,
     {
       method: "POST",
       headers: {
-        "User-Agent": USER_AGENT,
-        "Content-Type": "application/x-www-form-urlencoded",
         Cookie: cookieJar,
-        Referer: "https://github.com/login",
+        Referer: GITHUB_LOGIN_URL,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: form,
+      body: loginForm,
     }
   );
   cookieJar = mergeCookies(cookieJar, postRes.headers.raw()["set-cookie"]);
 
   const location = postRes.headers.get("location") || "";
-
-  // 4) If redirected to 2FA, handle it
   if (location.includes("/sessions/two-factor")) {
     if (!twoFactorSecret) {
-      throw new Error("Two-factor secret missing for 2FA login");
+      throw new Error(
+        "GH_2FA_SECRET must be set for two-factor authentication"
+      );
     }
-    cookieJar = await doTwoFactor(cookieJar, location, twoFactorSecret);
-  }
-  // 5) Otherwise, check for login failure
-  else if (postRes.status !== 302) {
+    cookieJar = await handleTwoFactor(cookieJar, location, twoFactorSecret);
+  } else if (postRes.status !== 302) {
     const $ = load(postHtml);
     throw new Error(`Login failed: ${$(".flash-error").text().trim()}`);
   }
 
-  // 6) Success—cache and return
   cachedCookie = cookieJar;
   return cookieJar;
 }

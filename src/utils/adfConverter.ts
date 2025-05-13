@@ -3,24 +3,15 @@ import { unified } from "unified";
 import he from "he";
 import remarkGfm from "remark-gfm";
 import remarkStringify from "remark-stringify";
+import { ADFNode } from "../domain/models/ADFModels";
 
-export interface ADFNode {
-  type: string;
-  attrs?: Record<string, any>;
-  content?: ADFNode[];
-  marks?: any[];
-  [key: string]: any;
-}
-
-const mdProcessor = unified()
-  .use(remarkStringify, {
-    fences: true,
-    bullet: "-",
-    rule: "-",
-    emphasis: "_",
-    listItemIndent: "one",
-  })
-  .use(remarkGfm);
+const mdProcessor = unified().use(remarkGfm).use(remarkStringify, {
+  fences: true,
+  bullet: "-",
+  rule: "-",
+  emphasis: "_",
+  listItemIndent: "one",
+});
 
 /**
  * Convert ADF (Atlassian Document Format) to Markdown.
@@ -83,7 +74,7 @@ export function adfToMarkdown(
       .join("\n\n");
     return he.decode(md);
   } catch (err: any) {
-    console.error("❌ ADF to Markdown conversion error:", err);
+    console.error("ADF to Markdown conversion error:", err);
     return "";
   }
 }

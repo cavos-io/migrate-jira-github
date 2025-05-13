@@ -1,63 +1,45 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-const requiredEnv = [
-  "JIRA_BASE_URL",
-  "JIRA_USER",
-  "JIRA_API_TOKEN",
-  "JIRA_JQL",
-  "GH_OWNER",
-  "GH_REPO",
-  "GH_TOKEN",
-  "GH_USER",
-  "GH_PASSWORD",
-] as const;
+import {
+  JiraConfig,
+  GitHubConfig,
+  GitHubAuth,
+} from "./domain/models/ConfigModels";
 
-requiredEnv.forEach((key) => {
-  if (!process.env[key]) {
-    throw new Error(`Missing env var ${key}`);
-  }
-});
+import {
+  IssueTypeMap,
+  PriorityOptionMap,
+  StatusOptionMap,
+  UserMap,
+} from "./domain/models/MappingModels";
 
-export interface JiraConfig {
-  baseUrl: string;
-  user: string;
-  token: string;
-  jql: string;
-  pageSize: number;
+function assertEnv(key: string): string {
+  const value = process.env[key];
+  if (!value) throw new Error(`Missing required env variable ${key}`);
+  return value;
 }
 
-export interface GhConfig {
-  owner: string;
-  repo: string;
-  token: string;
-  projectV2Id?: string;
-  projectV2StatusFieldId?: string;
-  projectV2PriorityFieldId?: string;
-  defaultPriorityOption?: string;
-  personalTokens: Record<string, string>;
-}
-
-export interface GhAuth {
-  username: string;
-  password: string;
-  twoFactorSecret?: string;
-}
+export const ghAuth: GitHubAuth = {
+  username: assertEnv("GH_USER"),
+  password: assertEnv("GH_PASSWORD"),
+  twoFactorSecret: process.env.GH_2FA_SECRET,
+};
 
 export const jiraConfig: JiraConfig = {
-  baseUrl: process.env.JIRA_BASE_URL!.replace(/\/+$/, ""),
-  user: process.env.JIRA_USER!,
-  token: process.env.JIRA_API_TOKEN!,
-  jql: process.env.JIRA_JQL!,
+  baseUrl: assertEnv("JIRA_BASE_URL").replace(/\/+$/, ""),
+  user: assertEnv("JIRA_USER"),
+  token: assertEnv("JIRA_API_TOKEN"),
+  jql: assertEnv("JIRA_JQL"),
   pageSize: process.env.JIRA_PAGE_SIZE
     ? Number.parseInt(process.env.JIRA_PAGE_SIZE, 10)
     : 50,
 };
 
-export const ghConfig: GhConfig = {
-  owner: process.env.GH_OWNER!,
-  repo: process.env.GH_REPO!,
-  token: process.env.GH_TOKEN!,
+export const ghConfig: GitHubConfig = {
+  owner: assertEnv("GH_OWNER"),
+  repo: assertEnv("GH_REPO"),
+  token: assertEnv("GH_TOKEN"),
   projectV2Id: process.env.GH_PROJECT_V2_ID,
   projectV2StatusFieldId: process.env.GH_PROJECT_V2_STATUS_FIELD_ID,
   projectV2PriorityFieldId: process.env.GH_PROJECT_V2_PRIORITY_FIELD_ID,
@@ -67,8 +49,25 @@ export const ghConfig: GhConfig = {
     : {},
 };
 
-export const ghAuth: GhAuth = {
-  username: process.env.GH_USER!,
-  password: process.env.GH_PASSWORD!,
-  twoFactorSecret: process.env.GH_2FA_SECRET,
+function parseJsonEnv<T>(key: string, defaultValue: T): T {
+  const v = process.env[key];
+  if (!v) return defaultValue;
+  try {
+    return JSON.parse(v) as T;
+  } catch {
+    throw new Error(`Invalid JSON in env var ${key}`);
+  }
+}
+
+export const mappingConfig = {
+  userMap: parseJsonEnv<UserMap>("JIRA_GH_USER_MAP", {}),
+  issueTypeMap: parseJsonEnv<IssueTypeMap>("JIRA_GH_ISSUE_TYPE_MAP", {}),
+  statusOptionMap: parseJsonEnv<StatusOptionMap>(
+    "JIRA_GH_STATUS_OPTION_MAP",
+    {}
+  ),
+  priorityOptionMap: parseJsonEnv<PriorityOptionMap>(
+    "JIRA_GH_PRIORITY_OPTION_MAP",
+    {}
+  ),
 };
