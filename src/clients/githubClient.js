@@ -1,25 +1,38 @@
-import { ghConfig } from "../config.js";
 import { graphql } from "@octokit/graphql";
 import { Octokit } from "@octokit/rest";
 import fetch from "node-fetch";
 
 export class GitHubClient {
-  constructor() {
-    this.octokit = new Octokit({
-      auth: ghConfig.token,
-      request: { fetch },
-    });
+  constructor({
+    owner,
+    repo,
+    token,
+    projectV2Id,
+    projectV2StatusFieldId,
+    projectV2PriorityFieldId,
+    defaultPriorityOption,
+    personalTokens,
+  }) {
+    this.owner = owner;
+    this.repo = repo;
+    this.authToken = token;
+    this.projectV2Id = projectV2Id;
+    this.projectV2StatusFieldId = projectV2StatusFieldId;
+    this.projectV2PriorityFieldId = projectV2PriorityFieldId;
+    this.defaultPriorityOption = defaultPriorityOption;
+    this.personalTokens = personalTokens;
 
+    this.octokit = new Octokit({ auth: token, request: { fetch } });
     this.graphql = graphql.defaults({
+      headers: { authorization: `token ${token}` },
       request: { fetch },
-      headers: { authorization: `token ${ghConfig.token}` },
     });
   }
 
   async createIssue({ title, body, type, labels = [], assignees = [] }) {
     const { data } = await this.octokit.issues.create({
-      owner: ghConfig.owner,
-      repo: ghConfig.repo,
+      owner: this.owner,
+      repo: this.repo,
       title,
       body,
       type,
@@ -31,8 +44,8 @@ export class GitHubClient {
 
   async getIssue(issueNumber) {
     const { data } = await this.octokit.issues.get({
-      owner: ghConfig.owner,
-      repo: ghConfig.repo,
+      owner: this.owner,
+      repo: this.repo,
       issue_number: issueNumber,
     });
     return data;
@@ -40,8 +53,8 @@ export class GitHubClient {
 
   async updateIssue(issueNumber, { body, state, state_reason }) {
     await this.octokit.issues.update({
-      owner: ghConfig.owner,
-      repo: ghConfig.repo,
+      owner: this.owner,
+      repo: this.repo,
       issue_number: issueNumber,
       ...(body && { body }),
       ...(state && { state }),
@@ -51,14 +64,13 @@ export class GitHubClient {
 
   async addComment(issueNumber, comment) {
     await this.octokit.issues.createComment({
-      owner: ghConfig.owner,
-      repo: ghConfig.repo,
+      owner: this.owner,
+      repo: this.repo,
       issue_number: issueNumber,
       body: comment,
     });
   }
 
-  // helper to fetch a Node ID for any issue number
   async getIssueNodeId(issueNumber) {
     const query = `
       query($owner: String!, $repo: String!, $number: Int!) {
@@ -68,18 +80,16 @@ export class GitHubClient {
       }
     `;
     const { repository } = await this.graphql(query, {
-      owner: ghConfig.owner,
-      repo: ghConfig.repo,
+      owner: this.owner,
+      repo: this.repo,
       number: issueNumber,
     });
     return repository.issue.id;
   }
 
-  // GraphQL mutation to nest sub-issues
   async addSubIssue(parentNumber, childNumber) {
     const parentId = await this.getIssueNodeId(parentNumber);
     const childId = await this.getIssueNodeId(childNumber);
-
     const mutation = `
       mutation($input: AddSubIssueInput!) {
         addSubIssue(input: $input) {
@@ -97,12 +107,9 @@ export class GitHubClient {
     });
   }
 
-  // GraphQL mutation Projects (beta/V2)
   async addIssueToProjectV2(issueNumber) {
-    const { projectV2Id } = ghConfig;
-    if (!projectV2Id) return;
+    if (!this.projectV2Id) return;
     const contentId = await this.getIssueNodeId(issueNumber);
-
     const mutation = `
       mutation($projectId: ID!, $contentId: ID!) {
         addProjectV2ItemById(input: {
@@ -113,16 +120,13 @@ export class GitHubClient {
         }
       }
     `;
-
     const result = await this.graphql(mutation, {
-      projectId: projectV2Id,
+      projectId: this.projectV2Id,
       contentId,
     });
-
     return result.addProjectV2ItemById.item.id;
   }
 
-  // GraphQL mutation update Project status
   async updateProjectV2ItemFieldValue(itemId, fieldId, optionId) {
     const mutation = `
       mutation($input: UpdateProjectV2ItemFieldValueInput!) {
@@ -133,7 +137,7 @@ export class GitHubClient {
     `;
     await this.graphql(mutation, {
       input: {
-        projectId: ghConfig.projectV2Id,
+        projectId: this.projectV2Id,
         itemId,
         fieldId,
         value: { singleSelectOptionId: optionId },

@@ -5,6 +5,7 @@ const required = [
   "JIRA_BASE_URL",
   "JIRA_USER",
   "JIRA_API_TOKEN",
+  "JIRA_JQL",
   "GH_OWNER",
   "GH_REPO",
   "GH_TOKEN",
@@ -29,4 +30,7 @@ export const ghConfig = {
   projectV2StatusFieldId: process.env.GH_PROJECT_V2_STATUS_FIELD_ID,
   projectV2PriorityFieldId: process.env.GH_PROJECT_V2_PRIORITY_FIELD_ID,
   defaultPriorityOption: process.env.GH_DEFAULT_PRIORITY_OPTION,
+  personalTokens: process.env.GH_USER_TOKENS
+    ? JSON.parse(process.env.GH_USER_TOKENS)
+    : {},
 };

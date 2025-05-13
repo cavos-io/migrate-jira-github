@@ -1,5 +1,3 @@
-import { ghConfig } from "../config.js";
-
 export class IssueMigrator {
   constructor(
     jiraClient,
@@ -10,30 +8,50 @@ export class IssueMigrator {
     userMap
   ) {
     this.jira = jiraClient;
-    this.gh = githubClient;
+    this._defaultGhClient = githubClient;
     this.issueTypeMap = issueTypeMap;
     this.priorityOptionMap = priorityOptionMap;
     this.statusOptionMap = statusOptionMap;
     this.userMap = userMap;
-    this.keyToNumber = new Map();
 
-    // track any related‐links we couldn't yet resolve
+    // carry over project-level IDs & defaults from the default client
+    this.projectV2StatusFieldId = githubClient.projectV2StatusFieldId;
+    this.projectV2PriorityFieldId = githubClient.projectV2PriorityFieldId;
+    this.defaultPriorityOption = githubClient.defaultPriorityOption;
+
+    // mapping JIRA key to newly created GH number
+    this.keyToNumber = new Map();
+    // store relations that couldn’t be linked until all issues exist
     this.pendingRelations = [];
 
-    // Use centralized GitHub configuration
-    this.owner = ghConfig.owner;
-    this.repo = ghConfig.repo;
-    this.projectV2StatusFieldId = ghConfig.projectV2StatusFieldId;
-    this.projectV2PriorityFieldId = ghConfig.projectV2PriorityFieldId;
-    this.defaultPriorityOption = ghConfig.defaultPriorityOption;
+    // cache GitHubClient instances by token (string to instance)
+    this._ghClients = new Map([[githubClient.authToken, githubClient]]);
   }
 
-  /**
-   * Flatten ADF (Atlassian Document Format) or pass-through strings.
-   */
+  /** get or create a GitHubClient for `token` */
+  _getGhClient(token) {
+    if (!token) throw new Error("No GitHub token provided");
+    if (!this._ghClients.has(token)) {
+      // baseConfig comes from your default client
+      const baseConfig = {
+        owner: this._defaultGhClient.owner,
+        repo: this._defaultGhClient.repo,
+        projectV2Id: this._defaultGhClient.projectV2Id,
+        projectV2StatusFieldId: this.projectV2StatusFieldId,
+        projectV2PriorityFieldId: this.projectV2PriorityFieldId,
+        defaultPriorityOption: this.defaultPriorityOption,
+        token,
+      };
+      const client = new this._defaultGhClient.constructor(baseConfig);
+      this._ghClients.set(token, client);
+    }
+    return this._ghClients.get(token);
+  }
+
   extractText(adf) {
     if (!adf) return "";
     if (typeof adf === "string") return adf;
+    // simple one-level ADF flatten
     return (
       adf.content
         .map((block) =>
@@ -47,13 +65,10 @@ export class IssueMigrator {
     );
   }
 
-  /**
-   * Fetch and migrate all Jira issues, parents before subtasks.
-   */
   async migrate() {
     const issues = await this.jira.fetchAllIssues();
 
-    // Sort so that parent issues run before their subtasks
+    // ensure parents before subtasks
     issues.sort(
       (a, b) =>
         Number(a.fields.issuetype.subtask) - Number(b.fields.issuetype.subtask)
@@ -67,28 +82,43 @@ export class IssueMigrator {
       }
     }
 
-    // Patch any pending relations
     await this._patchPendingRelations();
   }
 
-  /**
-   * Handle migration of a single issue.
-   */
   async _migrateSingle(issue) {
     const { key, fields } = issue;
     const isSubtask = Boolean(fields.issuetype.subtask);
-    const title = `[${key}] ${fields.summary}`;
 
+    // build the issue body
     let body = this.extractText(fields.description);
+
+    // choose a GitHub token: personal if mapped, else default
+    const creatorId = fields.creator?.accountId;
+    const ghUsername = creatorId && this.userMap[creatorId];
+    const personalTokens = this._defaultGhClient.personalTokens || {};
+    const token =
+      (ghUsername && personalTokens[ghUsername]) ||
+      this._defaultGhClient.authToken;
+    const ghClient = this._getGhClient(token);
+
+    // if using default, annotate original author
+    if (!ghUsername || !personalTokens[ghUsername]) {
+      const displayName = fields.creator?.displayName || creatorId;
+      body = `*Originally created by ${displayName} in Jira*\n\n${body}`;
+      console.warn(`No personal token for ${creatorId}; using default token`);
+    }
+
+    // append any related-links placeholder
     body = this._appendRelatedIssues(body, fields.issuelinks, key);
 
-    const assignees = this._buildAssignees(fields);
+    // create the GH issue
+    const title = `[${key}] ${fields.summary}`;
     const labels = this._buildLabels(fields);
+    const assignees = this._buildAssignees(fields);
     const type =
       this.issueTypeMap[fields.issuetype.name] || fields.issuetype.name;
 
-    // Create the GitHub issue
-    const ghNumber = await this.gh.createIssue({
+    const ghNumber = await ghClient.createIssue({
       title,
       body,
       type,
@@ -97,35 +127,42 @@ export class IssueMigrator {
     });
     this.keyToNumber.set(key, ghNumber);
 
-    // Set the issue state
-    if (fields.status?.statusCategory?.name === "Done") {
-      await this.gh.updateIssue(ghNumber, {
-        state: "closed",
-        state_reason: "completed",
-      });
-      console.log(`🔒 Closed GH #${ghNumber} (Jira ${key} was Done)`);
-    }
-
-    // Add to project and set fields
-    const projectItemId = await this.gh.addIssueToProjectV2(ghNumber);
+    // add to project & set status/priority
+    const projectItemId = await ghClient.addIssueToProjectV2(ghNumber);
     await this._updateProjectFields(
+      ghClient,
       projectItemId,
       fields.status.id,
       fields.priority?.name
     );
 
-    // Migrate comments
+    // migrate comments
     await this._migrateComments(ghNumber, key);
 
-    // Link nested subtask relationships in GitHub
+    // link subtasks under parent
     if (isSubtask && fields.parent) {
       const parentNum = this.keyToNumber.get(fields.parent.key);
       if (parentNum) {
-        await this.gh.addSubIssue(parentNum, ghNumber);
+        await ghClient.addSubIssue(parentNum, ghNumber);
         console.log(
           `🔗 Linked subtask ${key} under parent ${fields.parent.key}`
         );
+      } else {
+        this.pendingRelations.push({
+          sourceKey: fields.parent.key,
+          jiraKey: key,
+          relType: "subtask",
+        });
       }
+    }
+
+    // close if Jira was Done
+    if (fields.status?.statusCategory?.name === "Done") {
+      await ghClient.updateIssue(ghNumber, {
+        state: "closed",
+        state_reason: "completed",
+      });
+      console.log(`🔒 Closed GH #${ghNumber}`);
     }
 
     console.log(
@@ -133,121 +170,109 @@ export class IssueMigrator {
     );
   }
 
-  /**
-   * Build and map labels
-   */
   _buildLabels(fields) {
     const set = new Set(fields.labels || []);
-    if (fields.issuetype.name === "Bug") {
-      set.add("bug");
-    }
-    return Array.from(set);
+    if (fields.issuetype.name === "Bug") set.add("bug");
+    return [...set];
   }
 
-  /**
-   * Map Jira assignee to GitHub username.
-   */
   _buildAssignees(fields) {
     const jiraId = fields.assignee?.accountId;
     const user = jiraId && this.userMap[jiraId];
     return user ? [user] : [];
   }
 
-  /**
-   * Update project status and priority fields using ghConfig IDs.
-   */
-  async _updateProjectFields(itemId, statusId, priorityName) {
+  async _updateProjectFields(ghClient, itemId, statusId, priorityName) {
     if (!itemId) return;
-
-    const statusOption = this.statusOptionMap[statusId];
-    if (statusOption) {
-      await this.gh.updateProjectV2ItemFieldValue(
+    const statusOpt = this.statusOptionMap[String(statusId)];
+    if (statusOpt) {
+      await ghClient.updateProjectV2ItemFieldValue(
         itemId,
         this.projectV2StatusFieldId,
-        statusOption
+        statusOpt
       );
     }
-
-    const priorityOption =
+    const prioOpt =
       this.priorityOptionMap[priorityName] || this.defaultPriorityOption;
-    if (priorityOption) {
-      await this.gh.updateProjectV2ItemFieldValue(
+    if (prioOpt) {
+      await ghClient.updateProjectV2ItemFieldValue(
         itemId,
         this.projectV2PriorityFieldId,
-        priorityOption
+        prioOpt
       );
     }
   }
 
-  /**
-   * Append all Jira issue-links as “Related” entries in the body.
-   */
   _appendRelatedIssues(body, issueLinks = [], sourceKey) {
-    if (!Array.isArray(issueLinks) || issueLinks.length === 0) {
-      return body;
-    }
+    if (!Array.isArray(issueLinks) || issueLinks.length === 0) return body;
 
     const lines = issueLinks
       .filter((link) => link.outwardIssue)
       .map((link) => {
         const jiraKey = link.outwardIssue.key;
-        const relType = link.type.name; // e.g. “Blocks”, “Cloners”
+        const relType = link.type.name;
         const ghNum = this.keyToNumber.get(jiraKey);
 
         if (!ghNum) {
           this.pendingRelations.push({ sourceKey, jiraKey, relType });
+          return `*${relType} ${jiraKey}*`;
         }
 
-        const target = ghNum
-          ? `[#${ghNum}](https://github.com/${this.owner}/${this.repo}/issues/${ghNum})`
-          : jiraKey; // placeholder for now
-
-        return `*${relType} ${target}*`;
+        return `*${relType} [#${ghNum}](https://github.com/${this._defaultGhClient.owner}/${this._defaultGhClient.repo}/issues/${ghNum})*`;
       });
 
-    if (lines.length === 0) return body;
-    return `${body}\n\n---\n**Related:**\n${lines.join("\n")}`;
+    return lines.length
+      ? `${body}\n\n---\n**Related:**\n${lines.join("\n")}`
+      : body;
   }
 
-  /**
-   * Migrate all comments for the given Jira key into the GitHub issue.
-   */
   async _migrateComments(ghNumber, jiraKey) {
     const comments = await this.jira.fetchComments(jiraKey);
-    const tasks = comments.map((c) => {
-      const text = this.extractText(c.body);
-      const author = this.userMap[c.author.accountId]
-        ? `@${this.userMap[c.author.accountId]}`
-        : c.author.displayName;
-      const commentBody = `*Comment by ${author} on ${c.created}*\n\n${text}`;
-      return this.gh
-        .addComment(ghNumber, commentBody)
-        .then(() => console.log(`💬 Migrated comment ${c.id} for ${jiraKey}`));
-    });
-    await Promise.all(tasks);
+
+    await Promise.all(
+      comments.map(async (c) => {
+        const text = this.extractText(c.body);
+        const jiraId = c.author.accountId;
+        const ghUsername = this.userMap[jiraId];
+        const personalTokens = this._defaultGhClient.personalTokens || {};
+        const token =
+          (ghUsername && personalTokens[ghUsername]) ||
+          this._defaultGhClient.authToken;
+        const client = this._getGhClient(token);
+
+        if (!ghUsername || !personalTokens[ghUsername]) {
+          console.warn(
+            `No personal token for comment author ${jiraId}; using default token`
+          );
+        }
+
+        const authorMention = ghUsername
+          ? `@${ghUsername}`
+          : c.author.displayName;
+        const prefix = ghUsername
+          ? `*Comment by ${authorMention} on ${c.created}*\n\n`
+          : `*Comment by ${c.author.displayName} in Jira*\n\n*Comment by ${authorMention} on ${c.created}*\n\n`;
+
+        await client.addComment(ghNumber, prefix + text);
+        console.log(`💬 Migrated comment ${c.id} for ${jiraKey}`);
+      })
+    );
   }
 
-  /**
-   * After every issue has been created, go back and replace any
-   * “*Blocks JIRA-123*” placeholders with real GH links.
-   */
   async _patchPendingRelations() {
     for (const { sourceKey, jiraKey, relType } of this.pendingRelations) {
       const sourceNum = this.keyToNumber.get(sourceKey);
       const targetNum = this.keyToNumber.get(jiraKey);
-
       if (sourceNum && targetNum) {
-        // fetch current issue body
-        const { body: currentBody } = await this.gh.getIssue(sourceNum);
+        const client = this._defaultGhClient;
+        const { body: currentBody } = await client.getIssue(sourceNum);
         const placeholder = `*${relType} ${jiraKey}*`;
-        const replacement = `*${relType} [#${targetNum}](https://github.com/${this.owner}/${this.repo}/issues/${targetNum})*`;
-
+        const replacement = `*${relType} [#${targetNum}](https://github.com/${client.owner}/${client.repo}/issues/${targetNum})*`;
         const updatedBody = currentBody.replace(
           new RegExp(placeholder, "g"),
           replacement
         );
-
-        await this.gh.updateIssue(sourceNum, { body: updatedBody });
+        await client.updateIssue(sourceNum, { body: updatedBody });
         console.log(
           `🔄 Patched relation ${relType}→${jiraKey} into GH #${sourceNum}`
         );

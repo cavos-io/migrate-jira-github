@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import "dotenv/config";
+import { jiraConfig, ghConfig } from "../config.js";
 import {
   issueTypeMap,
   priorityOptionMap,
@@ -11,9 +12,12 @@ import { GitHubClient } from "../clients/githubClient.js";
 import { IssueMigrator } from "../services/issueMigrator.js";
 
 async function main() {
+  const jiraClient = new JiraClient(jiraConfig);
+  const githubClient = new GitHubClient(ghConfig);
+
   const migrator = new IssueMigrator(
-    new JiraClient(),
-    new GitHubClient(),
+    jiraClient,
+    githubClient,
     issueTypeMap,
     priorityOptionMap,
     statusOptionMap,
