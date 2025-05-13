@@ -23,7 +23,15 @@ export class JiraClient {
           jql: jiraConfig.jql,
           startAt,
           maxResults: jiraConfig.pageSize,
-          fields: ["summary", "description", "issuetype", "subtasks", "parent"],
+          fields: [
+            "summary",
+            "description",
+            "issuetype",
+            "subtasks",
+            "parent",
+            "labels",
+            "assignee",
+          ],
         },
       });
       all.push(...resp.data.issues);

@@ -1,7 +1,9 @@
 export class IssueMigrator {
-  constructor(jiraClient, githubClient) {
+  constructor(jiraClient, githubClient, issueTypeMap, assigneeMap) {
     this.jira = jiraClient;
     this.gh = githubClient;
+    this.issueTypeMap = issueTypeMap;
+    this.assigneeMap = assigneeMap;
     this.keyToNumber = new Map();
   }
 
@@ -46,11 +48,26 @@ export class IssueMigrator {
     const isSub = fields.issuetype.subtask;
     const title = `[${key}] ${fields.summary}`;
 
-    // 1) grab raw description
+    // map Jira issueType to Github type
+    const issueType = fields.issuetype.name;
+    const type = this.issueTypeMap[issueType] || issueType;
+    const labels = [...fields.labels];
+
+    // and if it's a Bug, add the 'bug' label (no dupes)
+    if (issueType === "Bug" && !labels.includes("bug")) {
+      labels.push("bug");
+    }
+
+    // map Jira accountId to GitHub username
+    const jiraId = fields.assignee?.accountId;
+    const ghUser = jiraId ? this.assigneeMap[jiraId] : undefined;
+    const assignees = ghUser ? [ghUser] : [];
+
+    // grab raw description
     const rawDesc = fields.description;
     let body = "";
 
-    // 2) coerce to string
+    // coerce to string
     if (!rawDesc) {
       body = "";
     } else if (typeof rawDesc === "string") {
@@ -60,7 +77,7 @@ export class IssueMigrator {
       body = this.extractTextFromADF(rawDesc);
     }
 
-    // 3) if subtask, append parent link
+    // if subtask, append parent link
     if (isSub) {
       const parentKey = fields.parent.key;
       const parentNum = this.keyToNumber.get(parentKey);
@@ -71,14 +88,20 @@ export class IssueMigrator {
       }
     }
 
-    // 4) create on GitHub
-    const ghNum = await this.gh.createIssue({ title, body });
+    // create issue on GitHub
+    const ghNum = await this.gh.createIssue({
+      title,
+      body,
+      type,
+      labels,
+      assignees,
+    });
 
     if (isSub) {
       const parentKey = fields.parent.key;
       const parentNum = this.keyToNumber.get(parentKey);
       if (parentNum) {
-        // instead of only appending a link, actually nest it:
+        // nest sub-issue
         await this.gh.addSubIssue(parentNum, ghNum);
         console.log(`🔗 Linked ${key} under parent ${parentKey}`);
       } else {

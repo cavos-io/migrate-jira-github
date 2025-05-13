@@ -12,13 +12,15 @@ export class GitHubClient {
     });
   }
 
-  async createIssue({ title, body, labels = [] }) {
+  async createIssue({ title, body, type, labels = [], assignees = [] }) {
     const { data } = await this.octokit.issues.create({
       owner: ghConfig.owner,
       repo: ghConfig.repo,
       title,
       body,
+      type,
       labels,
+      assignees,
     });
     return data.number;
   }
