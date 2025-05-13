@@ -29,6 +29,17 @@ export function adfToMarkdown(adf, mentionMap = {}) {
       };
     }
 
+    if (node.type === "inlineCard" && node.attrs?.url) {
+      const url = node.attrs.url;
+      const match = url.match(/\/browse\/([^\/\?]+)/);
+      const key = match ? match[1] : url;
+      return {
+        type: "text",
+        text: key,
+        marks: node.marks ?? [],
+      };
+    }
+
     if (node.type === "media" && node.attrs?.id) {
       const alt = node.attrs.alt || "";
       const id = node.attrs.id;

@@ -87,6 +87,19 @@ export class IssueMigrator {
 
     // build the issue body
     let body = adfToMarkdown(fields.description, this.userMap);
+    const jiraKeyPattern = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
+    let ref;
+    while ((ref = jiraKeyPattern.exec(body)) !== null) {
+      const otherKey = ref[1];
+      if (otherKey !== key && !this.keyToNumber.has(otherKey)) {
+        // we haven’t seen this target yet, queue it
+        this.pendingRelations.push({
+          sourceKey: key,
+          jiraKey: otherKey,
+          relType: "ref",
+        });
+      }
+    }
 
     // choose a GitHub token: personal if mapped, else default
     const creatorId = fields.creator?.accountId;
@@ -257,54 +270,121 @@ export class IssueMigrator {
   async _migrateComments(ghNumber, jiraKey, urlMap) {
     const comments = await this.jira.fetchComments(jiraKey);
 
-    await Promise.all(
-      comments.map(async (c) => {
-        let text = adfToMarkdown(c.body, this.userMap);
-        for (const [oldUrl, newUrl] of Object.entries(urlMap)) {
-          text = text.replace(new RegExp(escapeRegExp(oldUrl), "g"), newUrl);
+    for (const c of comments) {
+      // 1) convert ADF → markdown and rewrite attachment URLs
+      let text = adfToMarkdown(c.body, this.userMap);
+      for (const [oldUrl, newUrl] of Object.entries(urlMap)) {
+        text = text.replace(new RegExp(escapeRegExp(oldUrl), "g"), newUrl);
+      }
+
+      // 2) scan for bare JIRA-refs and queue any we can’t link yet
+      const jiraKeyPattern = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
+      let m;
+      while ((m = jiraKeyPattern.exec(text)) !== null) {
+        const otherKey = m[1];
+        const ghNum = this.keyToNumber.get(otherKey);
+        if (ghNum) {
+          // already migrated → replace inline now
+          const ghLink = `[#${ghNum}](https://github.com/${this._defaultGhClient.owner}/${this._defaultGhClient.repo}/issues/${ghNum})`;
+          text = text.replace(new RegExp(`\\b${otherKey}\\b`, "g"), ghLink);
+        } else {
+          // queue for later
+          this.pendingRelations.push({
+            sourceCommentId: null, // fill in after we have the GH comment ID
+            jiraKey: otherKey,
+            relType: "ref_in_comment",
+          });
         }
+      }
 
-        const jiraId = c.author.accountId;
-        const ghUsername = this.userMap[jiraId];
-        const authorMention = ghUsername
-          ? `@${ghUsername}`
-          : c.author.displayName;
-        const prefix = ghUsername
-          ? `*Comment by ${authorMention} on ${c.created}*\n\n`
-          : `*Comment by ${c.author.displayName} in Jira*\n\n*Comment by ${authorMention} on ${c.created}*\n\n`;
+      // 3) prefix with author and timestamp
+      const jiraId = c.author.accountId;
+      const ghUsername = this.userMap[jiraId];
+      const authorMention = ghUsername
+        ? `@${ghUsername}`
+        : c.author.displayName;
+      const prefix = ghUsername
+        ? `*Comment by ${authorMention} on ${c.created}*\n\n`
+        : `*Comment by ${c.author.displayName} in Jira*\n\n`;
 
-        const client = this._getGhClient(
-          (ghUsername && this._defaultGhClient.personalTokens[ghUsername]) ||
-            this._defaultGhClient.authToken
-        );
+      // 4) post it
+      const client = this._getGhClient(
+        (ghUsername && this._defaultGhClient.personalTokens[ghUsername]) ||
+          this._defaultGhClient.authToken
+      );
+      const { id: commentId } = await client.addComment(
+        ghNumber,
+        prefix + text
+      );
 
-        await client.addComment(ghNumber, prefix + text);
-        console.log(`💬 Migrated comment ${c.id} for ${jiraKey}`);
-      })
-    );
+      // 5) back-patch any pendingRelations entries to include this commentId
+      this.pendingRelations = this.pendingRelations.map((rel) => {
+        if (rel.relType === "ref_in_comment" && rel.sourceCommentId == null) {
+          return { ...rel, sourceCommentId: commentId };
+        }
+        return rel;
+      });
+
+      console.log(`💬 Migrated comment ${c.id} → GH comment ${commentId}`);
+    }
   }
 
   async _patchPendingRelations() {
-    for (const { sourceKey, jiraKey, relType } of this.pendingRelations) {
-      const sourceNum = this.keyToNumber.get(sourceKey);
+    const client = this._defaultGhClient;
+
+    for (const rel of this.pendingRelations) {
+      const { sourceKey, sourceCommentId, jiraKey, relType } = rel;
       const targetNum = this.keyToNumber.get(jiraKey);
-      if (sourceNum && targetNum) {
-        const client = this._defaultGhClient;
-        const { body: currentBody } = await client.getIssue(sourceNum);
-        const placeholder = `*${relType} ${jiraKey}*`;
-        const replacement = `*${relType} [#${targetNum}](https://github.com/${client.owner}/${client.repo}/issues/${targetNum})*`;
+      if (!targetNum) {
+        console.warn(`⚠️ Missing target for ${relType}→${jiraKey}`);
+        continue;
+      }
+
+      if (relType === "ref_in_comment" && sourceCommentId) {
+        // fetch the comment
+        const { body: currentBody } = await client.getComment(sourceCommentId);
+        const ghLink = `[#${targetNum}](https://github.com/${client.owner}/${client.repo}/issues/${targetNum})`;
         const updatedBody = currentBody.replace(
-          new RegExp(placeholder, "g"),
-          replacement
+          new RegExp(`\\b${jiraKey}\\b`, "g"),
+          ghLink
         );
-        await client.updateIssue(sourceNum, { body: updatedBody });
-        console.log(
-          `🔄 Patched relation ${relType}→${jiraKey} into GH #${sourceNum}`
-        );
-      } else {
-        console.warn(
-          `⚠️ Cannot patch ${relType}→${jiraKey} for ${sourceKey}: migration missing`
-        );
+        if (updatedBody !== currentBody) {
+          await client.updateComment(sourceCommentId, { body: updatedBody });
+          console.log(
+            `🔄 Patched comment ${sourceCommentId}: ${jiraKey} → #${targetNum}`
+          );
+        }
+      } else if (sourceKey) {
+        // your existing issue‐body patch logic
+        const sourceNum = this.keyToNumber.get(sourceKey);
+        if (!sourceNum) continue;
+        const { body: currentBody } = await client.getIssue(sourceNum);
+        let updatedBody;
+
+        // ref in body
+        if (relType === "ref") {
+          const ghLink = `[#${targetNum}](https://github.com/${client.owner}/${client.repo}/issues/${targetNum})`;
+          updatedBody = currentBody.replace(
+            new RegExp(`\\b${jiraKey}\\b`, "g"),
+            ghLink
+          );
+
+          // other structured placeholders
+        } else {
+          const placeholder = `*${relType} ${jiraKey}*`;
+          const replacement = `*${relType} [#${targetNum}](https://github.com/${client.owner}/${client.repo}/issues/${targetNum})*`;
+          updatedBody = currentBody.replace(
+            new RegExp(escapeRegExp(placeholder), "g"),
+            replacement
+          );
+        }
+
+        if (updatedBody !== currentBody) {
+          await client.updateIssue(sourceNum, { body: updatedBody });
+          console.log(
+            `🔄 Patched issue ${sourceNum}: ${relType} ${jiraKey} → #${targetNum}`
+          );
+        }
       }
     }
   }

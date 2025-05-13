@@ -175,13 +175,33 @@ export class GitHubClient {
     return { id: policy.asset.id, url: href };
   }
 
-  async addComment(issueNumber, comment) {
-    await this.octokit.issues.createComment({
+  async addComment(issueNumber, body) {
+    const { data } = await this.octokit.issues.createComment({
       owner: this.owner,
       repo: this.repo,
       issue_number: issueNumber,
-      body: comment,
+      body,
     });
+    return data;
+  }
+
+  async getComment(commentId) {
+    const { data } = await this.octokit.issues.getComment({
+      owner: this.owner,
+      repo: this.repo,
+      comment_id: commentId,
+    });
+    return data;
+  }
+
+  async updateComment(commentId, { body }) {
+    const { data } = await this.octokit.issues.updateComment({
+      owner: this.owner,
+      repo: this.repo,
+      comment_id: commentId,
+      body,
+    });
+    return data;
   }
 
   async getIssueNodeId(issueNumber) {

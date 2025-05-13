@@ -3,10 +3,15 @@ export default function applyDryRunToClient(client) {
   // helper to log and return a dummy ID
   const fakeId = () => _fake++;
 
-  // stub out methods that mutate state:
+  // Stub methods that mutate state:
   client.createIssue = async function (opts) {
     console.log(`[Dry-Run] createIssue →`, opts);
     return fakeId();
+  };
+
+  client.getIssue = async function (num) {
+    console.log(`[Dry-Run] getIssue #${num}`);
+    return { body: "" };
   };
 
   client.updateIssue = async function (num, opts) {
@@ -25,12 +30,22 @@ export default function applyDryRunToClient(client) {
     );
     return {
       id: issueNumber,
-      url: `https://dry.run./${filename}`,
+      url: `https://dry.run/${filename}`,
     };
   };
 
   client.addComment = async function (num, comment) {
     console.log(`[Dry-Run] addComment #${num} →`, comment);
+    return { id: num, body: comment };
+  };
+
+  client.getComment = async function (commentId) {
+    console.log(`[Dry-Run] getComment #${commentId}`);
+    return { body: "" };
+  };
+
+  client.updateComment = async function (commentId, opts) {
+    console.log(`[Dry-Run] updateComment #${commentId} →`, opts);
   };
 
   client.addSubIssue = async function (parent, child) {
@@ -48,7 +63,8 @@ export default function applyDryRunToClient(client) {
     optionId
   ) {
     console.log(
-      `[Dry-Run] updateProjectV2ItemFieldValue item=${itemId} field=${fieldId} opt=${optionId}`
+      `[Dry-Run] updateProjectV2ItemFieldValue item=${itemId} ` +
+        `field=${fieldId} opt=${optionId}`
     );
   };
 
