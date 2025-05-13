@@ -1,7 +1,8 @@
 {
   "scripts": {
-    "migrate": "node src/bin/migrate.js",
-    "migrate:dry-run": "node src/bin/migrate.js --dry-run"
+    "build": "tsc",
+    "migrate": "tsx src/bin/migrate.ts",
+    "migrate:dry-run": "tsx src/bin/migrate.ts --dry-run"
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",
@@ -18,5 +19,21 @@
     "unified": "^11.0.5",
     "yargs": "^17.7.2"
   },
-  "type": "module"
+  "devDependencies": {
+    "@types/cheerio": "^0.22.30",
+    "@types/he": "^1.2.3",
+    "@types/jsdom": "^21.1.0",
+    "@types/node": "^20.5.1",
+    "@types/yargs": "^17.0.33",
+    "@typescript-eslint/eslint-plugin": "^6.3.0",
+    "@typescript-eslint/parser": "^6.3.0",
+    "eslint": "^8.44.0",
+    "prettier": "^3.0.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.1.6"
+  },
+  "overrides": {
+    "@types/mdast": "4.0.4"
+  },
+  "type": "commonjs"
 }

@@ -1,4 +1,8 @@
-export default function applyDryRunToClient(client) {
+import type { IGitHubClient } from "../clients/types";
+
+export default function applyDryRunToClient(
+  client: IGitHubClient
+): IGitHubClient {
   let _fake = 1000;
   // helper to log and return a dummy ID
   const fakeId = () => _fake++;

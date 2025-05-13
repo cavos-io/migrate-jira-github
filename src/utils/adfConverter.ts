@@ -4,6 +4,14 @@ import he from "he";
 import remarkGfm from "remark-gfm";
 import remarkStringify from "remark-stringify";
 
+export interface ADFNode {
+  type: string;
+  attrs?: Record<string, any>;
+  content?: ADFNode[];
+  marks?: any[];
+  [key: string]: any;
+}
+
 const mdProcessor = unified()
   .use(remarkStringify, {
     fences: true,
@@ -14,10 +22,16 @@ const mdProcessor = unified()
   })
   .use(remarkGfm);
 
-export function adfToMarkdown(adf, mentionMap = {}) {
+/**
+ * Convert ADF (Atlassian Document Format) to Markdown.
+ */
+export function adfToMarkdown(
+  adf: ADFNode | ADFNode[],
+  mentionMap: Record<string, string> = {}
+): string {
   if (!adf) return "";
 
-  const mapFn = (node) => {
+  const mapFn = (node: ADFNode): ADFNode => {
     if (node.type === "mention" && node.attrs?.id) {
       const raw = node.attrs.text ?? "";
       const clean = raw.startsWith("@") ? raw.slice(1) : raw;
@@ -28,37 +42,32 @@ export function adfToMarkdown(adf, mentionMap = {}) {
         marks: node.marks ?? [],
       };
     }
-
     if (node.type === "inlineCard" && node.attrs?.url) {
-      const url = node.attrs.url;
-      const match = url.match(/\/browse\/([^\/\?]+)/);
-      const key = match ? match[1] : url;
-      return {
-        type: "text",
-        text: key,
-        marks: node.marks ?? [],
-      };
+      const url = node.attrs.url as string;
+      const key = url.match(/\/browse\/([^\/\?]+)/)?.[1] ?? url;
+      return { type: "text", text: key, marks: node.marks ?? [] };
     }
-
     if (node.type === "media" && node.attrs?.id) {
-      const alt = node.attrs.alt || "";
-      const id = node.attrs.id;
+      const alt = (node.attrs.alt as string) || "";
+      const id = node.attrs.id as string;
       return {
         type: "text",
         text: `\n\n![${alt}](${id})\n\n`,
         marks: node.marks ?? [],
       };
     }
-
     return node;
   };
 
   const docs = Array.isArray(adf) ? adf : [adf];
   const remapped = docs.map((doc) =>
-    (function traverse(n) {
+    (function traverse(n: ADFNode): ADFNode {
       if (!n || typeof n !== "object") return n;
       const m = mapFn(n);
-      const clone = { ...m, attrs: m.attrs ? { ...m.attrs } : undefined };
+      const clone: ADFNode = {
+        ...m,
+        attrs: m.attrs ? { ...m.attrs } : undefined,
+      };
       if (Array.isArray(clone.content)) {
         clone.content = clone.content.map(traverse);
       }
@@ -67,12 +76,13 @@ export function adfToMarkdown(adf, mentionMap = {}) {
   );
 
   try {
+    // **Note**: fromADF expects a plain object, so we cast to `any` here
     const md = remapped
-      .map((doc) => mdProcessor.stringify(fromADF(doc)))
+      .map((doc) => mdProcessor.stringify(fromADF(doc as any)))
       .filter(Boolean)
       .join("\n\n");
     return he.decode(md);
-  } catch (err) {
+  } catch (err: any) {
     console.error("❌ ADF to Markdown conversion error:", err);
     return "";
   }

@@ -7,13 +7,13 @@ import {
   priorityOptionMap,
   statusOptionMap,
   userMap,
-} from "../mappings.js";
-import { jiraConfig, ghConfig } from "../config.js";
-import { JiraClient } from "../clients/jiraClient.js";
-import { GitHubClient } from "../clients/githubClient.js";
-import { getGitHubBrowserCookie } from "../utils/getBrowserCookie.js";
-import { IssueMigrator } from "../services/issueMigrator.js";
-import applyDryRunToClient from "../utils/dryRun.js";
+} from "../mappings";
+import { jiraConfig, ghConfig } from "../config";
+import { JiraClient } from "../clients/jiraClient";
+import { GitHubClient } from "../clients/githubClient";
+import { getGitHubBrowserCookie } from "../utils/getBrowserCookie";
+import { IssueMigrator } from "../services/issueMigrator";
+import applyDryRunToClient from "../utils/dryRun";
 
 async function main() {
   const { dryRun } = yargs(hideBin(process.argv))

@@ -1,42 +1,62 @@
-import { adfToMarkdown } from "../utils/adfConverter.js";
+import { adfToMarkdown } from "../utils/adfConverter";
+import type { IJiraClient, IGitHubClient } from "../clients/types";
+import type {
+  IssueMigratorOptions,
+  PendingRelation,
+  IssueTypeMap,
+  PriorityOptionMap,
+  StatusOptionMap,
+  UserMap,
+} from "./types";
 
 export class IssueMigrator {
+  private jira: IJiraClient;
+  private _defaultGhClient: IGitHubClient;
+  private dryRun: boolean;
+  private issueTypeMap: IssueTypeMap;
+  private priorityOptionMap: PriorityOptionMap;
+  private statusOptionMap: StatusOptionMap;
+  private userMap: UserMap;
+
+  private projectV2StatusFieldId?: string;
+  private projectV2PriorityFieldId?: string;
+  private defaultPriorityOption?: string;
+
+  private keyToNumber: Map<string, number>;
+  private pendingRelations: PendingRelation[];
+  private _ghClients: Map<string, IGitHubClient>;
+
   constructor(
-    jiraClient,
-    githubClient,
-    issueTypeMap,
-    priorityOptionMap,
-    statusOptionMap,
-    userMap,
-    options = {}
+    jiraClient: IJiraClient,
+    githubClient: IGitHubClient,
+    issueTypeMap: IssueTypeMap,
+    priorityOptionMap: PriorityOptionMap,
+    statusOptionMap: StatusOptionMap,
+    userMap: UserMap,
+    options: IssueMigratorOptions = {}
   ) {
     this.jira = jiraClient;
     this._defaultGhClient = githubClient;
-    this.dryRun = options.dryRun || false;
+    this.dryRun = options.dryRun ?? false;
     this.issueTypeMap = issueTypeMap;
     this.priorityOptionMap = priorityOptionMap;
     this.statusOptionMap = statusOptionMap;
     this.userMap = userMap;
 
-    // carry over project-level IDs & defaults from the default client
     this.projectV2StatusFieldId = githubClient.projectV2StatusFieldId;
     this.projectV2PriorityFieldId = githubClient.projectV2PriorityFieldId;
     this.defaultPriorityOption = githubClient.defaultPriorityOption;
 
-    // mapping JIRA key to newly created GH number
     this.keyToNumber = new Map();
-    // store relations that couldn’t be linked until all issues exist
     this.pendingRelations = [];
 
-    // cache GitHubClient instances by token (string to instance)
     this._ghClients = new Map([[githubClient.authToken, githubClient]]);
   }
 
   /** get or create a GitHubClient for `token` */
-  _getGhClient(token) {
+  private _getGhClient(token: string): IGitHubClient {
     if (!token) throw new Error("No GitHub token provided");
     if (!this._ghClients.has(token)) {
-      // baseConfig comes from your default client
       const baseConfig = {
         owner: this._defaultGhClient.owner,
         repo: this._defaultGhClient.repo,
@@ -46,30 +66,26 @@ export class IssueMigrator {
         defaultPriorityOption: this.defaultPriorityOption,
         token,
       };
-      const client = new this._defaultGhClient.constructor(baseConfig);
+      const client = new (this._defaultGhClient.constructor as any)(
+        baseConfig
+      ) as IGitHubClient;
 
       if (this.dryRun) {
-        import("../utils/dryRun.js").then(
-          ({ default: applyDryRunToClient }) => {
-            applyDryRunToClient(client);
-          }
-        );
+        import("../utils/dryRun").then(({ default: applyDryRunToClient }) => {
+          applyDryRunToClient(client);
+        });
       }
-
       this._ghClients.set(token, client);
     }
-    return this._ghClients.get(token);
+    return this._ghClients.get(token)!;
   }
 
-  async migrate() {
+  async migrate(): Promise<void> {
     const issues = await this.jira.fetchAllIssues();
-
-    // ensure parents before subtasks
     issues.sort(
       (a, b) =>
         Number(a.fields.issuetype.subtask) - Number(b.fields.issuetype.subtask)
     );
-
     for (const issue of issues) {
       try {
         await this._migrateSingle(issue);
@@ -77,11 +93,10 @@ export class IssueMigrator {
         console.error(`Failed migrating ${issue.key}:`, err);
       }
     }
-
     await this._patchPendingRelations();
   }
 
-  async _migrateSingle(issue) {
+  private async _migrateSingle(issue: any): Promise<void> {
     const { key, fields } = issue;
     const isSubtask = Boolean(fields.issuetype.subtask);
 
@@ -138,11 +153,12 @@ export class IssueMigrator {
 
     // migrate attachments
     const jiraAttachments = await this.jira.fetchAttachments(key);
-    const urlMap = {};
+    const urlMap: Record<string, string> = {};
     await Promise.all(
       jiraAttachments.map(async (a) => {
         try {
-          const buf = await this.jira.downloadAttachment(a.content);
+          const arrayBuf = await this.jira.downloadAttachment(a.content);
+          const buf = Buffer.from(arrayBuf);
           const { url } = await ghClient.uploadAttachment(
             ghNumber,
             buf,
@@ -211,40 +227,50 @@ export class IssueMigrator {
     );
   }
 
-  _buildLabels(fields) {
-    const set = new Set(fields.labels || []);
+  private _buildLabels(fields: any): string[] {
+    const set = new Set<string>(fields.labels || []);
     if (fields.issuetype.name === "Bug") set.add("bug");
     return [...set];
   }
 
-  _buildAssignees(fields) {
+  private _buildAssignees(fields: any): string[] {
     const jiraId = fields.assignee?.accountId;
     const user = jiraId && this.userMap[jiraId];
     return user ? [user] : [];
   }
 
-  async _updateProjectFields(ghClient, itemId, statusId, priorityName) {
+  private async _updateProjectFields(
+    ghClient: IGitHubClient,
+    itemId: string | undefined,
+    statusId: number,
+    priorityName?: string
+  ): Promise<void> {
     if (!itemId) return;
     const statusOpt = this.statusOptionMap[String(statusId)];
     if (statusOpt) {
       await ghClient.updateProjectV2ItemFieldValue(
         itemId,
-        this.projectV2StatusFieldId,
+        this.projectV2StatusFieldId!,
         statusOpt
       );
     }
     const prioOpt =
-      this.priorityOptionMap[priorityName] || this.defaultPriorityOption;
+      this.defaultPriorityOption ??
+      (priorityName ? this.priorityOptionMap[priorityName] : undefined);
     if (prioOpt) {
       await ghClient.updateProjectV2ItemFieldValue(
         itemId,
-        this.projectV2PriorityFieldId,
+        this.projectV2PriorityFieldId!,
         prioOpt
       );
     }
   }
 
-  _appendRelatedIssues(body, issueLinks = [], sourceKey) {
+  private _appendRelatedIssues(
+    body: string,
+    issueLinks: any[] = [],
+    sourceKey: string
+  ): string {
     if (!Array.isArray(issueLinks) || issueLinks.length === 0) return body;
 
     const lines = issueLinks
@@ -267,7 +293,11 @@ export class IssueMigrator {
       : body;
   }
 
-  async _migrateComments(ghNumber, jiraKey, urlMap) {
+  private async _migrateComments(
+    ghNumber: number,
+    jiraKey: string,
+    urlMap: Record<string, string>
+  ): Promise<void> {
     const comments = await this.jira.fetchComments(jiraKey);
 
     for (const c of comments) {
@@ -290,7 +320,7 @@ export class IssueMigrator {
         } else {
           // queue for later
           this.pendingRelations.push({
-            sourceCommentId: null, // fill in after we have the GH comment ID
+            sourceCommentId: undefined,
             jiraKey: otherKey,
             relType: "ref_in_comment",
           });
@@ -329,7 +359,7 @@ export class IssueMigrator {
     }
   }
 
-  async _patchPendingRelations() {
+  private async _patchPendingRelations(): Promise<void> {
     const client = this._defaultGhClient;
 
     for (const rel of this.pendingRelations) {
@@ -390,6 +420,6 @@ export class IssueMigrator {
   }
 }
 
-function escapeRegExp(str) {
+function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
