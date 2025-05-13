@@ -25,4 +25,5 @@ export const ghConfig = {
   owner: process.env.GH_OWNER,
   repo: process.env.GH_REPO,
   token: process.env.GH_TOKEN,
+  projectV2Id: process.env.GH_PROJECT_V2_ID,
 };

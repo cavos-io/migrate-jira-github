@@ -72,4 +72,27 @@ export class GitHubClient {
       },
     });
   }
+
+  // GraphQL mutation Projects (beta/V2)
+  async addIssueToProjectV2(issueNumber) {
+    const { projectV2Id } = ghConfig;
+    if (!projectV2Id) return;
+    const contentId = await this.getIssueNodeId(issueNumber);
+
+    const mutation = `
+      mutation($projectId: ID!, $contentId: ID!) {
+        addProjectV2ItemById(input: {
+          projectId: $projectId,
+          contentId: $contentId
+        }) {
+          item { id }
+        }
+      }
+    `;
+
+    await this.graphql(mutation, {
+      projectId: projectV2Id,
+      contentId,
+    });
+  }
 }

@@ -97,6 +97,9 @@ export class IssueMigrator {
       assignees,
     });
 
+    // add into Projects
+    await this.gh.addIssueToProjectV2(ghNum);
+
     // fetch and migrate comments
     const comments = await this.jira.fetchComments(key);
     for (const c of comments) {
